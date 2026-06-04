@@ -170,6 +170,89 @@ See [docs/MOODLE_SETUP.md](docs/MOODLE_SETUP.md) for the matching configuration 
 
 ---
 
+## Two ways to consume this folder
+
+**Option A — Copy in (steps above).** Copy `backend/src/*` into your app's `src/lti/` and `frontend/src/*` into your app's `src/lti/`. The files then resolve your app's own `node_modules`. Best when you want to fork/diverge from the module.
+
+**Option B — Reference in place (no copy).** Keep this folder intact as a sibling of your `backend/`/`frontend/` and import its source directly. Nothing portable is duplicated in your app — you only write the app-specific adapter + bootstrap + thin views. This is how the **`selfgroupassignment`** project consumes it, and it's the recommended setup when you want to keep vibe-coding new LTI features inside this folder. Wiring:
+
+```
+your-project/
+├── package.json            ← root: hosts the LTI runtime deps (see below)
+├── lti-moodle-integration/ ← this folder, dropped in unchanged
+├── backend/                ← your app (keeps its own node_modules)
+└── frontend/               ← your app (keeps its own node_modules)
+```
+
+1. **Provide the folder's runtime deps so the sibling can resolve them.** Node/TS resolve a module's `import`s by walking *up* the directory tree, so this folder needs `express`, `ltijs`, `jsonwebtoken`, `mongoose` (backend) and `axios` (frontend) to be reachable from an ancestor directory. The simplest way is a **root `package.json`** with those deps + `npm install` at the root:
+
+```jsonc
+// ./package.json (workspace root)
+{
+  "private": true,
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^5.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "ltijs": "^5.9.5",
+    "mongoose": "^8.7.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.7.5"
+  }
+}
+```
+
+(npm workspaces work too; this minimal root install keeps your `backend/`/`frontend/` `node_modules` untouched.)
+
+2. **Backend — compile the folder + import it relatively.** In `backend/tsconfig.json`, add the folder to `include` and exclude the `*.example.ts` reference adapters:
+
+```jsonc
+{
+  "include": ["src/**/*.ts", "../lti-moodle-integration/backend/src/**/*.ts"],
+  "exclude": [
+    "node_modules", "dist",
+    "../lti-moodle-integration/backend/src/adapters/*.example.ts",
+    "../lti-moodle-integration/backend/src/models/drizzle-schema.example.ts"
+  ]
+}
+```
+
+Then your `bootstrap.ts` / adapter import the public API by relative path:
+
+```typescript
+import { initLti, createLtiAdminRouter, setLtiLogger } from '../../../lti-moodle-integration/backend/src/index';
+import type { LtiAdapter } from '../../../../lti-moodle-integration/backend/src/types';
+import { LtiCourseMapModel } from '../../../../lti-moodle-integration/backend/src/models/LtiCourseMapModel.mongoose';
+```
+
+> Note: `tsc` doesn't rewrite path aliases in emitted JS, so the backend uses **relative** imports (works for `tsx` dev, `tsc --noEmit`, and `node dist`). Because the folder is now part of the program, the emitted `dist/` nests under `dist/backend/src/` — point `main`/`start` there.
+
+3. **Frontend — alias the folder.** In `vite.config.ts` and `tsconfig.json`:
+
+```typescript
+// vite.config.ts
+alias: { '@lti': path.resolve(__dirname, '../lti-moodle-integration/frontend/src') }
+```
+
+```jsonc
+// tsconfig.json
+"paths": { "@lti/*": ["../lti-moodle-integration/frontend/src/*"] }
+```
+
+Then import the portable client directly: `import { configureLtiApi, getLtiSession } from '@lti/api';`. (Vite resolves `axios` from your frontend's `node_modules`; `vue-tsc` resolves it from the root install in step 1.)
+
+4. **Your app keeps only the glue.** Everything that touches your models/auth lives in your app, importing the portable types/core above:
+   - `backend/src/lti/adapters/<yourAdapter>.ts` — implements `LtiAdapter` (or `LtiLoginOnlyAdapter`).
+   - `backend/src/lti/bootstrap.ts` — calls `initLti` + mounts `createLtiAdminRouter`.
+   - `frontend/src/lti/views/*.vue` — your app-styled `LtiLaunchView` / `LtiDeepLinkView` / `LtiPlatformsAdminView` (start from this folder's templates and wire your auth store + route names).
+
+To move to the next project: copy this folder in unchanged, repeat steps 1–4. Nothing in this folder needs editing for portability — all the app-specific code lives in your `backend/`/`frontend/`.
+
+---
+
 ## SQL-backed deployments (`ltijs-sequelize`)
 
 `ltijs` defaults to MongoDB for its own internal bookkeeping — registered platforms, OIDC nonces, the tool's own JWK keypair, idtoken cache, etc. Projects that don't want to run a MongoDB instance can swap that out for a SQL database by passing a `dbPlugin` instance instead of a `dbUrl`. The integration point on the module side is already there:
