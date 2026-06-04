@@ -1,11 +1,13 @@
 # Integration Guide
 
-A drop-in checklist for adding this LTI module to an existing Express + Vue project.
+A drop-in checklist for adding this LTI module to an existing Express + Vue **or** Express + React project.
 
 ## Prerequisites
 
 - An Express.js backend (v4 or v5).
-- A Vue 3 + Vue Router frontend (works with both Vuex and Pinia for state).
+- A frontend in one of:
+  - **Vue 3** + Vue Router (works with both Vuex and Pinia for state) — use `frontend/src/views/`.
+  - **React 18** + `react-router-dom` v6+ (works with Redux/Zustand/Context for state) — use `frontend/src/react/`.
 - A user/course/resource data model already in place — this module *bridges* an LMS to your existing entities, it doesn't create them.
 
 The minimum domain entities you need are:
@@ -88,7 +90,7 @@ Each adapter method's contract is fully documented in `types.ts`. The "easy" one
 - `listCoursesForTeacher` — list the teacher's courses.
 - `getCourseById` — get a course by id.
 
-If you skip category methods (`listSelectableCategories?`, `getCategoryById?`, `listCategoryAgents?`), the frontend Deep Linking UI hides the category toggle automatically — just pass `:category-supported="false"` to `<LtiDeepLinkView>`.
+If you skip category methods (`listSelectableCategories?`, `getCategoryById?`, `listCategoryAgents?`), the frontend Deep Linking UI hides the category toggle automatically — pass `:category-supported="false"` to `<LtiDeepLinkView>` (Vue) or `<LtiDeepLink categorySupported={false} />` (React).
 
 ### Step 5 — Wire into your Express server
 
@@ -191,7 +193,7 @@ app.use((req, res, next) => {
 cp -r frontend/src <your-frontend>/src/lti
 ```
 
-In your `main.ts`:
+This copies `api.ts` (framework-neutral, used by both flavours), the Vue components in `views/`, and the React components in `react/`. You can delete whichever framework folder you don't use. In your `main.ts` / `main.tsx`:
 
 ```typescript
 import { configureLtiApi } from './lti/api';
@@ -201,9 +203,11 @@ configureLtiApi({
 });
 ```
 
-### Step 8 — Add the routes to Vue Router
+> The rest of this section has a **Vue** and a **React** track. Follow the one matching your frontend.
 
-Open `frontend/src/lti/router-integration.example.ts` and copy the `ltiRoutes` array into your router. Make them **public** (no auth guard):
+### Step 8 — Add the routes
+
+**Vue** — open `frontend/src/lti/router-integration.example.ts` and copy the `ltiRoutes` array into your router. Make them **public** (no auth guard):
 
 ```typescript
 router.beforeEach((to, from, next) => {
@@ -214,9 +218,28 @@ router.beforeEach((to, from, next) => {
 });
 ```
 
-### Step 9 — Fill in the LtiLaunchView integration hooks
+**React** — install the peers, then copy the routes from `frontend/src/lti/react/routes-integration.example.tsx` into your `react-router-dom` config. Keep `/lti/launch` (and `/lti/deeplink`) **public**; gate `/admin/lti-platforms` with your own admin wrapper:
 
-Open `src/lti/views/LtiLaunchView.vue` and edit the section marked `INTEGRATION HOOKS`:
+```bash
+npm install react react-dom react-router-dom axios
+```
+
+```tsx
+import { LtiLaunch } from './lti/react/LtiLaunch';
+import { LtiDeepLink } from './lti/react/LtiDeepLink';
+import { LtiPlatformsAdmin } from './lti/react/LtiPlatformsAdmin';
+
+const router = createBrowserRouter([
+  { path: '/lti/launch', element: <LtiLaunch /> },          // public
+  { path: '/lti/deeplink', element: <LtiDeepLink /> },      // public
+  { path: '/admin/lti-platforms', element: <RequireRole role="admin"><LtiPlatformsAdmin /></RequireRole> },
+  // ...your other routes
+]);
+```
+
+### Step 9 — Fill in the launch view integration hooks
+
+**Vue** — open `src/lti/views/LtiLaunchView.vue` and edit the section marked `INTEGRATION HOOKS`:
 
 1. `persistToken(token, expiresInSec, tenant)` — call your auth store's `setToken`/`setTenant`.
 2. `loadProfile()` — call your `/auth/me` (or equivalent) and return the user.
@@ -235,6 +258,27 @@ async function loadProfile() {
   const auth = useAuthStore();
   await auth.fetchProfile();
   return auth.user;
+}
+```
+
+**React** — open `src/lti/react/LtiLaunch.tsx` and edit the same three hooks at the top of the file:
+
+1. `persistToken(token, expiresInSec, tenant)` — write the JWT into your store and set the axios header.
+2. `loadProfile()` — fetch the signed-in user (return `null` to skip role-based routing).
+3. `targetRouteFor()` — return a `{ path, query? }` for your app. The default assumes paths `/welcome`, `/student/topic/:id`, `/teacher/topic/:id`, `/admin/topic/:id`, `/lti/category/:id`.
+
+With Zustand, a minimal hook looks like:
+
+```tsx
+async function persistToken(token, expiresInSec, tenant) {
+  useAuthStore.getState().setToken(token, expiresInSec * 1000);
+  if (tenant) useTenantStore.getState().setTenant(tenant);
+  axios.defaults.headers.common['Authorization'] = 'Bearer ' + token;
+}
+
+async function loadProfile() {
+  await useAuthStore.getState().fetchProfile();
+  return useAuthStore.getState().user;
 }
 ```
 
@@ -317,7 +361,7 @@ export const myAdapter: LtiAdapter = {
 };
 ```
 
-The frontend Vue UI reads `pageData.resourceLabel` and renders all related strings dynamically.
+Both the Vue and React Deep Linking UIs read `pageData.resourceLabel` and render all related strings dynamically.
 
 ### Skip the Teacher Manage page
 

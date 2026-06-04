@@ -44,12 +44,18 @@
   "peerDependencies": {
     "axios": "^1.6.0",
     "vue": "^3.4.0",
-    "vue-router": "^4.3.0"
+    "vue-router": "^4.3.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "react-router-dom": "^6.0.0"
   },
   "peerDependenciesMeta": {
     "axios": { "optional": true },
     "vue": { "optional": true },
-    "vue-router": { "optional": true }
+    "vue-router": { "optional": true },
+    "react": { "optional": true },
+    "react-dom": { "optional": true },
+    "react-router-dom": { "optional": true }
   },
   "optionalDependencies": {
     "mongoose": "^8.0.0",
@@ -69,6 +75,7 @@
     "mongoose": "OPTIONAL. Only needed if you use the Mongoose adapter / Mongoose models.",
     "drizzle-orm": "OPTIONAL. Only needed if you use the Drizzle adapter.",
     "pg": "OPTIONAL. Postgres driver — only needed with Drizzle adapter (or other raw-SQL setup).",
-    "vue / vue-router / axios": "OPTIONAL peer deps for the frontend bits. Required only if you copy the Vue components into your frontend project."
+    "vue / vue-router / axios": "OPTIONAL peer deps for the frontend bits. Required only if you copy the Vue components (frontend/src/views/) into your frontend project.",
+    "react / react-dom / react-router-dom": "OPTIONAL peer deps for the React frontend bits (frontend/src/react/). Required only if you copy the React components instead of the Vue ones. Install only the framework you actually use — the other one's peers stay unmet without npm errors."
   }
 }

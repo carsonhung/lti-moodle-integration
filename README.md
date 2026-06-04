@@ -1,8 +1,8 @@
 # LTI 1.3 Moodle Integration
 
-A portable, adapter-based **LTI 1.3 Provider** module for Express.js + Vue 3 applications. Lets your app be launched from Moodle (or any LTI 1.3-compatible LMS) as an external tool, with full support for OIDC login, Deep Linking (teacher activity configuration), session bridging (LTI token → app JWT), and platform registration.
+A portable, adapter-based **LTI 1.3 Provider** module for Express.js applications, with ready-made **Vue 3** _and_ **React 18** frontend components. Lets your app be launched from Moodle (or any LTI 1.3-compatible LMS) as an external tool, with full support for OIDC login, Deep Linking (teacher activity configuration), session bridging (LTI token → app JWT), and platform registration.
 
-Extracted from the [TALIC Chatbot project](../) and made framework-agnostic so it can be dropped into any Express/Vue application — Mongoose/MongoDB, Drizzle/Postgres, Prisma, Supabase, you choose.
+Extracted from the [TALIC Chatbot project](../) and made framework-agnostic so it can be dropped into any Express application — Mongoose/MongoDB, Drizzle/Postgres, Prisma, Supabase, you choose. The frontend ships in two flavours (`frontend/src/views/` for Vue, `frontend/src/react/` for React) that share the same framework-neutral `api.ts`.
 
 ---
 
@@ -10,9 +10,10 @@ Extracted from the [TALIC Chatbot project](../) and made framework-agnostic so i
 
 - **OIDC Login & Launch** — Receives Moodle's LTI launch, validates the JWT, and redirects users into your app.
 - **Login-only mode** *(new)* — Set `skipDeepLinking: true` to use LTI purely as an SSO replacement. The core skips registering every deep-link / teacher-management / category route, and you ship an `LtiLoginOnlyAdapter` (3 methods) instead of the full `LtiAdapter` (~25 methods). See `adapters/login-only.example.ts`.
-- **Deep Linking** — Teachers pick a course + resource (or category) in a clean Vue UI; the selection is persisted as a binding for that LMS activity.
+- **Deep Linking** — Teachers pick a course + resource (or category) in a clean UI (Vue or React component provided); the selection is persisted as a binding for that LMS activity.
 - **Session Bridge** — Exchanges the LTI launch token (`ltik`) for your app's JWT so the SPA can authenticate.
-- **Platform Registration** — Admin API + Vue UI for registering LMS platforms (Moodle, Canvas, etc.).
+- **Platform Registration** — Admin API + UI (Vue or React) for registering LMS platforms (Moodle, Canvas, etc.).
+- **Vue or React frontend** — Ship the same LTI flows with Vue 3 (`frontend/src/views/`) or React 18 (`frontend/src/react/`); both share one framework-neutral `api.ts`.
 - **Auto-mapping** — Tries to match Moodle courses to your app's courses using context identifiers, course IDs, course codes, etc.
 - **Auto-enrollment** — Optionally adds students to a course when they launch.
 - **Category bindings** — A single Moodle activity can be bound to a *category* of resources (e.g. "let students pick from these 12 chatbots") instead of a single resource.
@@ -45,12 +46,17 @@ lti-moodle-integration/
 │           └── schema.sql          — raw SQL for non-Drizzle Postgres projects
 ├── frontend/
 │   └── src/
-│       ├── api.ts                  — axios handlers for tool + admin endpoints
+│       ├── api.ts                  — axios handlers for tool + admin endpoints (framework-neutral, shared)
 │       ├── router-integration.example.ts
-│       └── views/
-│           ├── LtiLaunchView.vue   — session-bridge view (loads on `/lti/launch`)
-│           ├── LtiDeepLinkView.vue — deep-link selection UI (loads on `/lti/deeplink`)
-│           └── LtiPlatformsAdmin.vue — admin platform CRUD UI
+│       ├── views/                  — Vue 3 components
+│       │   ├── LtiLaunchView.vue   — session-bridge view (loads on `/lti/launch`)
+│       │   ├── LtiDeepLinkView.vue — deep-link selection UI (loads on `/lti/deeplink`)
+│       │   └── LtiPlatformsAdmin.vue — admin platform CRUD UI
+│       └── react/                  — React 18 components (parallel to views/, same endpoints)
+│           ├── LtiLaunch.tsx
+│           ├── LtiDeepLink.tsx
+│           ├── LtiPlatformsAdmin.tsx
+│           └── routes-integration.example.tsx
 └── docs/
     ├── ARCHITECTURE.md             — module design + LTI 1.3 flow diagrams
     ├── MOODLE_SETUP.md             — step-by-step Moodle external tool config
@@ -123,12 +129,12 @@ You also need two LTI-specific tables (or Mongoose collections). Use:
 - **Drizzle**: copy `models/drizzle-schema.example.ts` (and run a migration).
 - **Other Postgres**: run `models/schema.sql`.
 
-### 4. Copy the frontend pieces into your Vue app
+### 4. Copy the frontend pieces into your app
 
-Put `frontend/src/*` into your frontend at `src/lti/` (or any path). Then:
+Put `frontend/src/*` into your frontend at `src/lti/` (or any path). `api.ts` is framework-neutral and shared by both flavours, so always copy it. Then configure the API base paths once at startup:
 
 ```typescript
-// main.ts
+// main.ts / main.tsx
 import { configureLtiApi } from './lti/api';
 configureLtiApi({
   ltiBase: '/api/v1/lti', // must match LTI_MOUNT_PATH on backend
@@ -136,9 +142,9 @@ configureLtiApi({
 });
 ```
 
-Add the three routes to your Vue router (see `frontend/src/router-integration.example.ts`). **Mark them as public** — don't gate them behind your auth middleware.
+**If your frontend is Vue 3** — use the components in `frontend/src/views/`. Add the three routes to your Vue router (see `frontend/src/router-integration.example.ts`). **Mark them as public** — don't gate them behind your auth middleware. Then edit `LtiLaunchView.vue` and fill in the `INTEGRATION HOOKS` section so it calls your auth store and uses your route names. The defaults assume `Welcome`, `StudentTopic`, `TeacherTopic`, `AdminTopic`, `LtiCategory` route names.
 
-Edit `LtiLaunchView.vue` and fill in the `INTEGRATION HOOKS` section so it calls your auth store and uses your route names. The defaults assume `Welcome`, `StudentTopic`, `TeacherTopic`, `AdminTopic`, `LtiCategory` route names.
+**If your frontend is React 18** — use the components in `frontend/src/react/` instead (you can ignore `views/` entirely). Add the routes from `frontend/src/react/routes-integration.example.tsx` to your `react-router-dom` config; keep `/lti/launch` public. Then edit `LtiLaunch.tsx`'s `INTEGRATION HOOKS` (`persistToken`, `loadProfile`, `targetRouteFor`) to call your auth store (Redux/Zustand/Context) and use your real route paths. See [Using the React components](#using-the-react-components) below.
 
 ### 5. Set environment variables
 
@@ -247,9 +253,67 @@ Then import the portable client directly: `import { configureLtiApi, getLtiSessi
 4. **Your app keeps only the glue.** Everything that touches your models/auth lives in your app, importing the portable types/core above:
    - `backend/src/lti/adapters/<yourAdapter>.ts` — implements `LtiAdapter` (or `LtiLoginOnlyAdapter`).
    - `backend/src/lti/bootstrap.ts` — calls `initLti` + mounts `createLtiAdminRouter`.
-   - `frontend/src/lti/views/*.vue` — your app-styled `LtiLaunchView` / `LtiDeepLinkView` / `LtiPlatformsAdminView` (start from this folder's templates and wire your auth store + route names).
+   - `frontend/src/lti/views/*.vue` (Vue) or `frontend/src/lti/react/*.tsx` (React) — your app-styled `LtiLaunch` / `LtiDeepLink` / `LtiPlatformsAdmin` (start from this folder's templates and wire your auth store + route names).
 
 To move to the next project: copy this folder in unchanged, repeat steps 1–4. Nothing in this folder needs editing for portability — all the app-specific code lives in your `backend/`/`frontend/`.
+
+---
+
+## Using the React components
+
+The backend and `frontend/src/api.ts` are framework-neutral, so a React frontend uses the **exact same** LTI engine, endpoints, and session bridge as the Vue one — only the UI layer differs. The React equivalents live in `frontend/src/react/`:
+
+| Vue (`frontend/src/views/`) | React (`frontend/src/react/`) | Purpose |
+|---|---|---|
+| `LtiLaunchView.vue` | `LtiLaunch.tsx` | Exchange `ltik` → app JWT, persist token, redirect by role |
+| `LtiDeepLinkView.vue` | `LtiDeepLink.tsx` | Teacher course + resource/category picker (optional — server-rendered HTML fallback exists) |
+| `LtiPlatformsAdmin.vue` | `LtiPlatformsAdmin.tsx` | Admin platform CRUD |
+| `router-integration.example.ts` | `routes-integration.example.tsx` | Router wiring (`react-router-dom` v6+) |
+
+### Install the React peer deps
+
+The React peers are declared **optional** in `package.json`, so installing only Vue (or only React) never triggers an unmet-peer error. In a React project install:
+
+```bash
+npm install react react-dom react-router-dom axios
+```
+
+### Wire it up
+
+```tsx
+// main.tsx
+import { configureLtiApi } from './lti/api';
+configureLtiApi({ ltiBase: '/api/v1/lti', apiBase: '/api/v1' });
+```
+
+```tsx
+// router.tsx
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { LtiLaunch } from './lti/react/LtiLaunch';
+import { LtiDeepLink } from './lti/react/LtiDeepLink';
+import { LtiPlatformsAdmin } from './lti/react/LtiPlatformsAdmin';
+
+const router = createBrowserRouter([
+  { path: '/lti/launch', element: <LtiLaunch /> },     // MUST stay public
+  { path: '/lti/deeplink', element: <LtiDeepLink /> },
+  { path: '/admin/lti-platforms', element: <LtiPlatformsAdmin /> }, // gate with your own admin guard
+  // ...your other routes
+]);
+
+export function App() {
+  return <RouterProvider router={router} />;
+}
+```
+
+### Fill in the integration hooks
+
+`LtiLaunch.tsx` mirrors the Vue view's hooks. Edit these three functions to match your app:
+
+- `persistToken(token, expiresInSec, tenant)` — store the JWT in your auth store (Redux/Zustand/Context) and set the axios `Authorization` header. The default writes to `localStorage`.
+- `loadProfile()` — fetch the signed-in user so role-based redirects work (return `null` to skip).
+- `targetRouteFor(...)` — map role + `agentId` / `categoryId` to your real route paths (defaults: `/welcome`, `/student/topic/:id`, `/teacher/topic/:id`, `/admin/topic/:id`, `/lti/category/:id`).
+
+The components use plain inline styles (no CSS framework) and Font Awesome class names for icons (same as the Vue versions) — restyle to match your design system. `react-router-dom` is the only router assumed; swap `useSearchParams` / `useNavigate` for your router's equivalents if you use a different one. If you don't want a React deep-link picker at all, skip `LtiDeepLink.tsx` and let the backend's server-rendered `deepLinkingUI.ts` handle it.
 
 ---
 
