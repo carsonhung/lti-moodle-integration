@@ -215,6 +215,18 @@ export async function saveLtiPlatform(
   await axios.post(`${apiBase}/lti/platforms`, platform);
 }
 
+/**
+ * Updates an existing registered platform. `platformId` is required to locate
+ * the record; any other field present is updated (empty strings are ignored by
+ * the backend so identity/endpoints are not clobbered). Pass `active` to toggle
+ * the platform on/off. Requires admin Bearer token on axios.
+ */
+export async function updateLtiPlatform(
+  platform: Partial<Omit<LtiPlatform, 'platformId'>> & { platformId: string }
+): Promise<void> {
+  await axios.put(`${apiBase}/lti/platforms`, platform);
+}
+
 export async function deleteLtiPlatform(platform: {
   platformId: string;
   url: string;
