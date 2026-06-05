@@ -79,11 +79,21 @@
           <i class="fas fa-save"></i>
           {{ saving ? 'Saving…' : 'Save Platform' }}
         </button>
+        <button
+          class="btn-action secondary"
+          :disabled="!canTest || testingKey === 'form'"
+          @click="testForm"
+        >
+          <i class="fas fa-plug"></i>
+          {{ testingKey === 'form' ? 'Testing…' : 'Test Connection' }}
+        </button>
         <button class="btn-action secondary" :disabled="saving" @click="resetForm">
           <i class="fas fa-undo"></i>
           Reset
         </button>
       </div>
+
+      <ConnectionResult :result="results.form" />
       <p class="muted">
         Calls <code>/api/v1/lti/platforms</code> (admin-only). LTI must be enabled on the backend
         (<code>LTI_ENABLED=true</code>).
@@ -110,26 +120,41 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in platforms" :key="p.platformId || `${p.url}-${p.clientId}`">
-              <td>{{ p.name || '-' }}</td>
-              <td class="mono">{{ p.url || '-' }}</td>
-              <td class="mono">{{ p.clientId || '-' }}</td>
-              <td class="mono">{{ p.authenticationEndpoint || '-' }}</td>
-              <td class="mono">{{ p.accesstokenEndpoint || '-' }}</td>
-              <td class="mono">{{ p.authConfigKey || '-' }}</td>
-              <td>
-                <button class="btn-link" @click="prefill(p)">
-                  <i class="fas fa-pen"></i> Edit
-                </button>
-                <button
-                  class="btn-link danger"
-                  :disabled="deletingId === p.platformId"
-                  @click="remove(p)"
-                >
-                  <i class="fas fa-trash"></i> Delete
-                </button>
-              </td>
-            </tr>
+            <template v-for="p in platforms" :key="p.platformId || `${p.url}-${p.clientId}`">
+              <tr>
+                <td>{{ p.name || '-' }}</td>
+                <td class="mono">{{ p.url || '-' }}</td>
+                <td class="mono">{{ p.clientId || '-' }}</td>
+                <td class="mono">{{ p.authenticationEndpoint || '-' }}</td>
+                <td class="mono">{{ p.accesstokenEndpoint || '-' }}</td>
+                <td class="mono">{{ p.authConfigKey || '-' }}</td>
+                <td>
+                  <button
+                    class="btn-link"
+                    :disabled="testingKey === rowKey(p)"
+                    @click="testRow(p)"
+                  >
+                    <i class="fas fa-plug"></i>
+                    {{ testingKey === rowKey(p) ? 'Testing…' : 'Test' }}
+                  </button>
+                  <button class="btn-link" @click="prefill(p)">
+                    <i class="fas fa-pen"></i> Edit
+                  </button>
+                  <button
+                    class="btn-link danger"
+                    :disabled="deletingId === p.platformId"
+                    @click="remove(p)"
+                  >
+                    <i class="fas fa-trash"></i> Delete
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="results[rowKey(p)]" class="result-row">
+                <td colspan="7">
+                  <ConnectionResult :result="results[rowKey(p)]" />
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -138,19 +163,35 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import {
   listLtiPlatforms,
   saveLtiPlatform,
   deleteLtiPlatform,
+  testLtiPlatform,
   type LtiPlatform,
+  type LtiConnectionTestResult,
 } from '../api';
+import ConnectionResult from '../components/LtiConnectionResult.vue';
 
 const loading = ref(false);
 const saving = ref(false);
 const deletingId = ref<string | null>(null);
 const error = ref<string | null>(null);
 const platforms = ref<LtiPlatform[]>([]);
+const testingKey = ref<string | null>(null);
+const results = reactive<Record<string, LtiConnectionTestResult>>({});
+
+const canTest = computed(
+  () =>
+    !!form.value.authConfigKey &&
+    !!form.value.authenticationEndpoint &&
+    !!form.value.accesstokenEndpoint
+);
+
+function rowKey(p: LtiPlatform): string {
+  return p.platformId || `${p.url}-${p.clientId}`;
+}
 
 const form = ref({
   name: 'Moodle',
@@ -209,6 +250,44 @@ async function savePlatform() {
     error.value = e?.response?.data?.message || e?.message || 'Failed to save platform.';
   } finally {
     saving.value = false;
+  }
+}
+
+async function testForm() {
+  if (!canTest.value) return;
+  error.value = null;
+  testingKey.value = 'form';
+  try {
+    results.form = await testLtiPlatform({
+      authenticationEndpoint: form.value.authenticationEndpoint,
+      accesstokenEndpoint: form.value.accesstokenEndpoint,
+      authConfigKey: form.value.authConfigKey,
+      authConfigMethod: form.value.authConfigMethod,
+    });
+  } catch (e: any) {
+    error.value = e?.response?.data?.message || e?.message || 'Connection test failed.';
+  } finally {
+    testingKey.value = null;
+  }
+}
+
+async function testRow(p: LtiPlatform) {
+  error.value = null;
+  const key = rowKey(p);
+  testingKey.value = key;
+  try {
+    results[key] = p.platformId
+      ? await testLtiPlatform({ platformId: p.platformId })
+      : await testLtiPlatform({
+          authenticationEndpoint: p.authenticationEndpoint || '',
+          accesstokenEndpoint: p.accesstokenEndpoint || '',
+          authConfigKey: p.authConfigKey || '',
+          authConfigMethod: p.authConfigMethod || 'JWK_SET',
+        });
+  } catch (e: any) {
+    error.value = e?.response?.data?.message || e?.message || 'Connection test failed.';
+  } finally {
+    testingKey.value = null;
   }
 }
 

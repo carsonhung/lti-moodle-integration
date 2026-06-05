@@ -22,6 +22,7 @@
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import { truthy } from './helpers';
 import { getLtiProvider } from './core';
+import { testPlatformConnection } from './platformConnectionTest';
 
 interface LtiAdminRouterOptions {
   /**
@@ -177,6 +178,58 @@ export function createLtiAdminRouter(options: LtiAdminRouterOptions): express.Ro
       } catch (e: any) {
         logger.error('[LTI Admin] list platforms failed', { message: e?.message, stack: e?.stack });
         return next(new ErrorClass('Failed to list LTI platforms', 500));
+      }
+    }
+  );
+
+  // Launch-free connectivity / config probe. Accepts either explicit platform
+  // fields (test before registering) or a `platformId` to test a registered
+  // platform. Admin-guarded but intentionally NOT requireLtiReady, so admins
+  // can validate endpoints before the provider is fully configured — unless a
+  // `platformId` lookup is requested, which needs the provider.
+  router.post(
+    '/platforms/test',
+    ...adminOnly,
+    async (req: Request, res: Response, next: NextFunction) => {
+      const body = req.body || {};
+      const platformId = String(body.platformId ?? '').trim();
+
+      try {
+        let input = {
+          authenticationEndpoint: String(body.authenticationEndpoint ?? '').trim(),
+          accesstokenEndpoint: String(body.accesstokenEndpoint ?? '').trim(),
+          authConfigKey: String(body.authConfigKey ?? '').trim(),
+          authConfigMethod: String(body.authConfigMethod ?? 'JWK_SET').trim(),
+        };
+
+        if (platformId) {
+          const lti = getLtiProvider();
+          const err = getLtiReadinessError(lti);
+          if (err) return next(new ErrorClass(err.message, err.statusCode));
+          const platforms = await lti.getAllPlatforms();
+          const list = Array.isArray(platforms)
+            ? await Promise.all(platforms.map(mapPlatform))
+            : [];
+          const match = list.find((p) => p.platformId === platformId);
+          if (!match) {
+            return next(new ErrorClass('No LTI platform found for that platformId', 404));
+          }
+          input = {
+            authenticationEndpoint: match.authenticationEndpoint ?? '',
+            accesstokenEndpoint: match.accesstokenEndpoint ?? '',
+            authConfigKey: match.authConfigKey ?? '',
+            authConfigMethod: match.authConfigMethod ?? 'JWK_SET',
+          };
+        }
+
+        const result = await testPlatformConnection(input);
+        return res.status(200).json({ success: result.success, checks: result.checks });
+      } catch (e: any) {
+        logger.error('[LTI Admin] test platform connection failed', {
+          message: e?.message,
+          stack: e?.stack,
+        });
+        return next(new ErrorClass('Failed to test LTI platform connection', 500));
       }
     }
   );

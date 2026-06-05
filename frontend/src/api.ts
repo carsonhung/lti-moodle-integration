@@ -222,3 +222,37 @@ export async function deleteLtiPlatform(platform: {
 }): Promise<void> {
   await axios.delete(`${apiBase}/lti/platforms`, { data: platform });
 }
+
+export interface LtiConnectionCheck {
+  id: 'keyset' | 'authentication' | 'accesstoken';
+  label: string;
+  url: string;
+  ok: boolean;
+  status?: number;
+  message: string;
+}
+
+export interface LtiConnectionTestResult {
+  success: boolean;
+  checks: LtiConnectionCheck[];
+}
+
+/**
+ * Runs a launch-free connectivity / config probe against a platform's keyset
+ * and OIDC / token endpoints. Pass `platformId` to test a registered platform,
+ * or the endpoint fields to test an unsaved form. Requires admin Bearer token.
+ */
+export async function testLtiPlatform(
+  payload:
+    | { platformId: string }
+    | Pick<
+        LtiPlatform,
+        'authenticationEndpoint' | 'accesstokenEndpoint' | 'authConfigKey' | 'authConfigMethod'
+      >
+): Promise<LtiConnectionTestResult> {
+  const { data } = await axios.post(`${apiBase}/lti/platforms/test`, payload);
+  return {
+    success: !!data?.success,
+    checks: Array.isArray(data?.checks) ? data.checks : [],
+  };
+}

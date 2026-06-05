@@ -9,13 +9,15 @@
  * Requires `react`, `react-dom`, and `axios` (peer deps). No router needed.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import {
   listLtiPlatforms,
   saveLtiPlatform,
   deleteLtiPlatform,
+  testLtiPlatform,
   type LtiPlatform,
+  type LtiConnectionTestResult,
 } from '../api';
 
 interface PlatformForm {
@@ -42,6 +44,10 @@ function errText(e: any, fallback: string): string {
   return e?.response?.data?.message || e?.message || fallback;
 }
 
+function rowKey(p: LtiPlatform): string {
+  return p.platformId || `${p.url}-${p.clientId}`;
+}
+
 export function LtiPlatformsAdmin() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -49,6 +55,12 @@ export function LtiPlatformsAdmin() {
   const [error, setError] = useState<string | null>(null);
   const [platforms, setPlatforms] = useState<LtiPlatform[]>([]);
   const [form, setForm] = useState<PlatformForm>({ ...EMPTY_FORM });
+  const [testingKey, setTestingKey] = useState<string | null>(null);
+  const [results, setResults] = useState<Record<string, LtiConnectionTestResult>>({});
+
+  const canTest = Boolean(
+    form.authConfigKey && form.authenticationEndpoint && form.accesstokenEndpoint
+  );
 
   const loadPlatforms = useCallback(async () => {
     setError(null);
@@ -93,6 +105,46 @@ export function LtiPlatformsAdmin() {
       setError(errText(e, 'Failed to save platform.'));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function testForm() {
+    if (!canTest) return;
+    setError(null);
+    setTestingKey('form');
+    try {
+      const result = await testLtiPlatform({
+        authenticationEndpoint: form.authenticationEndpoint,
+        accesstokenEndpoint: form.accesstokenEndpoint,
+        authConfigKey: form.authConfigKey,
+        authConfigMethod: form.authConfigMethod,
+      });
+      setResults((prev) => ({ ...prev, form: result }));
+    } catch (e: any) {
+      setError(errText(e, 'Connection test failed.'));
+    } finally {
+      setTestingKey(null);
+    }
+  }
+
+  async function testRow(p: LtiPlatform) {
+    setError(null);
+    const key = rowKey(p);
+    setTestingKey(key);
+    try {
+      const result = p.platformId
+        ? await testLtiPlatform({ platformId: p.platformId })
+        : await testLtiPlatform({
+            authenticationEndpoint: p.authenticationEndpoint || '',
+            accesstokenEndpoint: p.accesstokenEndpoint || '',
+            authConfigKey: p.authConfigKey || '',
+            authConfigMethod: p.authConfigMethod || 'JWK_SET',
+          });
+      setResults((prev) => ({ ...prev, [key]: result }));
+    } catch (e: any) {
+      setError(errText(e, 'Connection test failed.'));
+    } finally {
+      setTestingKey(null);
     }
   }
 
@@ -223,12 +275,20 @@ export function LtiPlatformsAdmin() {
           </button>
           <button
             style={{ ...styles.btn, ...styles.btnSecondary }}
+            disabled={!canTest || testingKey === 'form'}
+            onClick={testForm}
+          >
+            <i className="fas fa-plug" /> {testingKey === 'form' ? 'Testing…' : 'Test Connection'}
+          </button>
+          <button
+            style={{ ...styles.btn, ...styles.btnSecondary }}
             disabled={saving}
             onClick={resetForm}
           >
             <i className="fas fa-undo" /> Reset
           </button>
         </div>
+        <ConnectionResult result={results.form} />
         <p style={styles.muted}>
           Calls <code>/api/v1/lti/platforms</code> (admin-only). LTI must be enabled on the backend
           (<code>LTI_ENABLED=true</code>).
@@ -257,30 +317,51 @@ export function LtiPlatformsAdmin() {
                 </tr>
               </thead>
               <tbody>
-                {platforms.map((p) => (
-                  <tr key={p.platformId || `${p.url}-${p.clientId}`}>
-                    <td style={styles.td}>{p.name || '-'}</td>
-                    <td style={{ ...styles.td, ...styles.mono }}>{p.url || '-'}</td>
-                    <td style={{ ...styles.td, ...styles.mono }}>{p.clientId || '-'}</td>
-                    <td style={{ ...styles.td, ...styles.mono }}>
-                      {p.authenticationEndpoint || '-'}
-                    </td>
-                    <td style={{ ...styles.td, ...styles.mono }}>{p.accesstokenEndpoint || '-'}</td>
-                    <td style={{ ...styles.td, ...styles.mono }}>{p.authConfigKey || '-'}</td>
-                    <td style={styles.td}>
-                      <button style={styles.btnLink} onClick={() => prefill(p)}>
-                        <i className="fas fa-pen" /> Edit
-                      </button>
-                      <button
-                        style={{ ...styles.btnLink, ...styles.btnLinkDanger }}
-                        disabled={deletingId === p.platformId}
-                        onClick={() => remove(p)}
-                      >
-                        <i className="fas fa-trash" /> Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {platforms.map((p) => {
+                  const key = rowKey(p);
+                  return (
+                    <Fragment key={key}>
+                      <tr>
+                        <td style={styles.td}>{p.name || '-'}</td>
+                        <td style={{ ...styles.td, ...styles.mono }}>{p.url || '-'}</td>
+                        <td style={{ ...styles.td, ...styles.mono }}>{p.clientId || '-'}</td>
+                        <td style={{ ...styles.td, ...styles.mono }}>
+                          {p.authenticationEndpoint || '-'}
+                        </td>
+                        <td style={{ ...styles.td, ...styles.mono }}>
+                          {p.accesstokenEndpoint || '-'}
+                        </td>
+                        <td style={{ ...styles.td, ...styles.mono }}>{p.authConfigKey || '-'}</td>
+                        <td style={styles.td}>
+                          <button
+                            style={styles.btnLink}
+                            disabled={testingKey === key}
+                            onClick={() => testRow(p)}
+                          >
+                            <i className="fas fa-plug" /> {testingKey === key ? 'Testing…' : 'Test'}
+                          </button>
+                          <button style={styles.btnLink} onClick={() => prefill(p)}>
+                            <i className="fas fa-pen" /> Edit
+                          </button>
+                          <button
+                            style={{ ...styles.btnLink, ...styles.btnLinkDanger }}
+                            disabled={deletingId === p.platformId}
+                            onClick={() => remove(p)}
+                          >
+                            <i className="fas fa-trash" /> Delete
+                          </button>
+                        </td>
+                      </tr>
+                      {results[key] && (
+                        <tr>
+                          <td style={styles.td} colSpan={7}>
+                            <ConnectionResult result={results[key]} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -295,6 +376,39 @@ function Field(props: { label: string; wide?: boolean; children: React.ReactNode
     <div style={props.wide ? { gridColumn: '1 / -1' } : undefined}>
       <label style={styles.fieldLabel}>{props.label}</label>
       {props.children}
+    </div>
+  );
+}
+
+function ConnectionResult(props: { result?: LtiConnectionTestResult }) {
+  const { result } = props;
+  if (!result) return null;
+  const box = {
+    ...styles.connResult,
+    ...(result.success ? styles.connResultOk : styles.connResultBad),
+  };
+  return (
+    <div style={box}>
+      <div
+        style={{
+          ...styles.connSummary,
+          color: result.success ? '#166534' : '#9f1239',
+        }}
+      >
+        <i className={result.success ? 'fas fa-check-circle' : 'fas fa-exclamation-triangle'} />
+        <span>{result.success ? 'Connection OK' : 'Issues found'}</span>
+      </div>
+      <ul style={styles.connChecks}>
+        {result.checks.map((check) => (
+          <li key={check.id} style={styles.connCheckItem}>
+            <span
+              style={{ ...styles.connDot, background: check.ok ? '#22c55e' : '#ef4444' }}
+            />
+            <span style={styles.connCheckLabel}>{check.label}:</span>
+            <span style={{ color: check.ok ? '#475569' : '#9f1239' }}>{check.message}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -391,6 +505,39 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
   },
   btnLinkDanger: { color: '#9f1239' },
+  connResult: {
+    marginTop: 10,
+    border: '1px solid #e2e8f0',
+    borderRadius: 10,
+    padding: '10px 12px',
+    background: '#f8fafc',
+  },
+  connResultOk: { borderColor: '#bbf7d0', background: '#f0fdf4' },
+  connResultBad: { borderColor: '#fecdd3', background: '#fff1f2' },
+  connSummary: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontWeight: 700,
+    fontSize: 13,
+    marginBottom: 8,
+  },
+  connChecks: { listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 },
+  connCheckItem: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 8,
+    fontSize: 12,
+    color: '#475569',
+  },
+  connDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    flex: '0 0 auto',
+    transform: 'translateY(1px)',
+  },
+  connCheckLabel: { fontWeight: 700, color: '#334155' },
 };
 
 export default LtiPlatformsAdmin;

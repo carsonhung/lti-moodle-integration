@@ -26,6 +26,12 @@
 
 export { initLti, setLtiLogger, getLtiProvider } from './core';
 export { createLtiAdminRouter } from './adminRouter';
+export { testPlatformConnection } from './platformConnectionTest';
+export type {
+  LtiConnectionTestInput,
+  LtiConnectionCheck,
+  LtiConnectionTestResult,
+} from './platformConnectionTest';
 export type {
   LtiAdapter,
   LtiLoginOnlyAdapter,
