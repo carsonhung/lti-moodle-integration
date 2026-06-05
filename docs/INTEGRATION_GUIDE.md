@@ -187,6 +187,28 @@ app.use((req, res, next) => {
 });
 ```
 
+#### Body parsers — skip them for the LTI mount path
+
+> ⚠️ **Common gotcha — `stream is not readable` on `/login`.** `ltijs` registers its
+> **own** body parsers on its routes (the OIDC `/login` POST and the `/launch` POST are
+> `application/x-www-form-urlencoded`). If your app-level `express.json()` /
+> `express.urlencoded()` run first, they read and **drain** the request stream, so when
+> `ltijs` tries to parse the body again `raw-body` throws `stream is not readable` and the
+> launch fails. The parsers must be **after** the CORS block but **skip the LTI mount path**:
+
+```typescript
+// Let ltijs own body parsing on its own routes.
+const skipLti = (parser: express.RequestHandler): express.RequestHandler => (req, res, next) => {
+  if (req.path.startsWith('/api/v1/lti')) return next();   // ← your LTI_MOUNT_PATH
+  return parser(req, res, next);
+};
+app.use(skipLti(express.json({ limit: '1mb' })));
+app.use(skipLti(express.urlencoded({ extended: true })));
+```
+
+Use the same `LTI_MOUNT_PATH` value you pass to `initLti`. This is the single most common
+reason a launch that *should* work returns a 500 from the very first Moodle redirect.
+
 ### Step 7 — Copy the frontend module
 
 ```bash

@@ -117,6 +117,14 @@ In Moodle, edit the External tool and set **Share launcher's email with tool = A
 
 The user is launching as a Student in Moodle but doesn't have a teacher/admin role in your app. Either change their Moodle role to Instructor for this course, or create a teacher account for them in your app.
 
+### Backend logs `stream is not readable` on `POST /login`
+
+Your app-level body parsers (`express.json()` / `express.urlencoded()`) are running on the
+LTI routes and draining the request stream before `ltijs` can read it. `ltijs` registers its
+own parsers on its routes, so the global parsers must **skip the LTI mount path**. See the
+"Body parsers" note in [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) (Step 6) — wrap the parsers
+so they `next()` past anything under `LTI_MOUNT_PATH`.
+
 ### Browser blocks the LTI iframe (Chrome third-party cookies)
 
 Set `LTI_LTIAAS_MODE=true` in your backend `.env` and restart. This makes ltijs use URL parameters instead of cookies.
