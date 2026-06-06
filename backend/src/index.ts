@@ -45,6 +45,7 @@ export type {
   LtiResourceBinding,
   LtiPlatformContext,
   LtiRole,
+  LtiConnectMode,
   LtiBindingType,
   LtiTenantMode,
   LtiDeepLinkItem,

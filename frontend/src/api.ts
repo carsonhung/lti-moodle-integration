@@ -95,6 +95,8 @@ export interface DeepLinkData {
   courses: DeepLinkCourse[];
   suggestedCourses?: DeepLinkCourse[];
   preselectedCourseId?: string;
+  lmsContext?: { title?: string; label?: string; contextId?: string };
+  provision?: { courseId: string; created: boolean; needsConfirmation: boolean };
   error?: string;
 }
 
@@ -168,14 +170,22 @@ export async function getDeepLinkCategories(
   return Array.isArray(data?.categories) ? data.categories : [];
 }
 
+export interface DeepLinkNewGrouping {
+  name: string;
+  description?: string;
+  settings?: Record<string, unknown>;
+}
+
 export async function submitDeepLink(
   ltik: string,
   courseId: string,
   agentId?: string,
-  categoryId?: string
+  categoryId?: string,
+  newGrouping?: DeepLinkNewGrouping
 ): Promise<DeepLinkSubmitResult> {
-  const body: Record<string, string> = { courseId };
+  const body: Record<string, unknown> = { courseId };
   if (categoryId) body.categoryId = categoryId;
+  else if (newGrouping) body.newGrouping = newGrouping;
   else if (agentId) body.agentId = agentId;
 
   const { data } = await axios.post(`${ltiBase}/deeplink/submit`, body, {

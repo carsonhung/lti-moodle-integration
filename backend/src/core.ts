@@ -15,9 +15,21 @@ import type {
   LtiInitOptions,
   LtiDeepLinkItem,
   LtiCourse,
+  LtiUser,
   LtiBindingType,
   LtiTenantMode,
+  LtiContextSnapshot,
+  LtiConnectMode,
 } from './types';
+
+// Integration flows the core supports. Kept local so the package stays portable;
+// the app mirrors these in `shared/lti.ts`.
+const LTI_CONNECT_MODES = {
+  LOGIN_ONLY: 'login-only',
+  CONTEXT_MAPPING: 'context-mapping',
+  DEEP_LINKING: 'deep-linking',
+} as const;
+const ALL_LTI_CONNECT_MODES: LtiConnectMode[] = Object.values(LTI_CONNECT_MODES);
 import {
   truthy,
   parseTokenMaxAgeSeconds,
@@ -191,6 +203,146 @@ export function getLtiProvider(): any {
   return lti;
 }
 
+/**
+ * Build a normalised snapshot of the LMS course context from the launch token,
+ * used to match or provision a platform course. Module-scoped so both the
+ * context-mapping `onConnect` branch and the deep-link selection flow can reuse
+ * it.
+ */
+function buildLtiContextSnapshot(res: express.Response): LtiContextSnapshot {
+  const token: any = res.locals?.token;
+  const ctx: any = res.locals?.context;
+  const claim =
+    token?.['https://purl.imsglobal.org/spec/lti/claim/context'] ||
+    token?.platformContext?.context;
+  const lis =
+    ctx?.lis ||
+    token?.platformContext?.lis ||
+    token?.['https://purl.imsglobal.org/spec/lti/claim/lis'] ||
+    token?.platformContext?.['https://purl.imsglobal.org/spec/lti/claim/lis'];
+  return {
+    contextId: getContextId(res),
+    label: safeStr(claim?.label || ctx?.context?.label) || undefined,
+    title: safeStr(claim?.title || ctx?.context?.title) || undefined,
+    type: Array.isArray(claim?.type) ? claim.type.map((t: unknown) => safeStr(t)) : undefined,
+    lisCourseOfferingSourcedId: safeStr(lis?.course_offering_sourcedid) || undefined,
+    lisCourseSectionSourcedId: safeStr(lis?.course_section_sourcedid) || undefined,
+    identifierCandidates: guessLmsCourseIdentifiers(res),
+  };
+}
+
+/**
+ * Resolve the platform course for a launch context, creating one if needed:
+ *  1. existing course map for this platform tuple,
+ *  2. else auto-map by fuzzy LMS identifiers (and attach the teacher),
+ *  3. else provision a course stub from the LMS context claims.
+ *
+ * Persists the `contextId -> course` map and returns the resolved course id, or
+ * `null` if nothing could be matched or provisioned. Shared by the
+ * context-mapping launch flow and the deep-link selection screen.
+ */
+async function resolveOrProvisionCourseForContext(
+  adapter: LtiAdapter,
+  res: express.Response,
+  teacher: LtiUser,
+  params: {
+    issuer: string;
+    clientId: string;
+    deploymentId: string;
+    contextId: string;
+    autoMapCourse: boolean;
+  }
+): Promise<{ courseId: string; created: boolean } | null> {
+  const platform = {
+    issuer: params.issuer,
+    clientId: params.clientId,
+    deploymentId: params.deploymentId,
+    contextId: params.contextId,
+  };
+  const isAdminUser = teacher.roles?.includes('admin');
+
+  let map = await adapter.findCourseMap(platform);
+
+  if (!map && params.autoMapCourse) {
+    const candidates = guessLmsCourseIdentifiers(res);
+    for (const candidate of candidates) {
+      const found =
+        (await adapter.findCourseByCourseIdForTeacher(teacher, candidate)) ||
+        (await adapter.findCourseByCourseId(candidate));
+      if (found) {
+        if (!isAdminUser) {
+          try {
+            await adapter.ensureTeacherInCourse(found, teacher);
+          } catch (e: any) {
+            logWarn('[LTI] Failed to auto-attach teacher to course (continuing)', {
+              userId: teacher.id,
+              courseId: found.id,
+              message: e?.message,
+            });
+          }
+        }
+        const courseTenant = found.tenantId || adapter.resolveEffectiveTenant();
+        await adapter.upsertCourseMap({
+          ...platform,
+          courseId: found.id,
+          createdBy: teacher.id,
+          ...(courseTenant ? { tenantId: courseTenant } : {}),
+        });
+        break;
+      }
+    }
+    map = await adapter.findCourseMap(platform);
+    if (!map) {
+      logWarn(
+        `[LTI] Course auto-map: no course matched LMS identifiers (contextId=${params.contextId}, candidates=${JSON.stringify(
+          candidates.slice(0, 12)
+        )})`
+      );
+    }
+  }
+
+  let created = false;
+  if (!map && adapter.provisionCourseFromLtiContext) {
+    const provisioned = await adapter.provisionCourseFromLtiContext({
+      teacher,
+      platform,
+      context: buildLtiContextSnapshot(res),
+    });
+    if (provisioned) {
+      const courseTenant = provisioned.tenantId || adapter.resolveEffectiveTenant();
+      await adapter.upsertCourseMap({
+        ...platform,
+        courseId: provisioned.id,
+        createdBy: teacher.id,
+        ...(courseTenant ? { tenantId: courseTenant } : {}),
+      });
+      map = await adapter.findCourseMap(platform);
+      created = true;
+      logInfo('[LTI] Course provisioned from LMS context', {
+        courseId: provisioned.id,
+        contextId: params.contextId,
+      });
+    }
+  }
+
+  if (!map) return null;
+
+  if (!isAdminUser) {
+    try {
+      const mappedCourse = await adapter.getCourseById(map.courseId);
+      if (mappedCourse) await adapter.ensureTeacherInCourse(mappedCourse, teacher);
+    } catch (e: any) {
+      logWarn('[LTI] Failed to auto-attach teacher to mapped course (continuing)', {
+        userId: teacher.id,
+        courseId: map.courseId,
+        message: e?.message,
+      });
+    }
+  }
+
+  return { courseId: map.courseId, created };
+}
+
 // ─── initLti ─────────────────────────────────────────────────────────────────
 
 export async function initLti(
@@ -205,11 +357,27 @@ export async function initLti(
     return;
   }
 
-  // Login-only mode: skip deep-link route registration entirely and treat
-  // the adapter as the minimal LtiLoginOnlyAdapter shape. The full LtiAdapter
-  // shape is also acceptable (every login-only method is a subset).
-  const skipDeepLinking =
-    opts.skipDeepLinking ?? truthy(process.env.LTI_SKIP_DEEP_LINKING);
+  // Resolve the integration flow. `connectMode` is the source of truth; when it
+  // is omitted we fall back to the legacy `skipDeepLinking` boolean so existing
+  // deployments keep working (true -> login-only, false -> deep-linking).
+  const legacySkip = opts.skipDeepLinking ?? truthy(process.env.LTI_SKIP_DEEP_LINKING);
+  const rawConnectMode = String(opts.connectMode ?? process.env.LTI_CONNECT_MODE ?? '').trim();
+  const connectMode: LtiConnectMode = ALL_LTI_CONNECT_MODES.includes(rawConnectMode as LtiConnectMode)
+    ? (rawConnectMode as LtiConnectMode)
+    : legacySkip
+      ? LTI_CONNECT_MODES.LOGIN_ONLY
+      : LTI_CONNECT_MODES.DEEP_LINKING;
+
+  const isLoginOnly = connectMode === LTI_CONNECT_MODES.LOGIN_ONLY;
+  const isContextMapping = connectMode === LTI_CONNECT_MODES.CONTEXT_MAPPING;
+  const isDeepLinking = connectMode === LTI_CONNECT_MODES.DEEP_LINKING;
+
+  // Deep-link routes (`/deeplink/*`, `/launch/manage`, `/category/*`) are only
+  // registered in deep-linking mode. Login-only and context-mapping skip them.
+  const skipDeepLinking = !isDeepLinking;
+  // Flows that resolve a platform course from the launch (and so auto-enroll
+  // students on the `/session` bridge).
+  const resolvesCourse = isContextMapping || isDeepLinking;
   const fullAdapter = adapter as LtiAdapter;
   const loginAdapter = adapter as LtiLoginOnlyAdapter;
 
@@ -294,7 +462,7 @@ export async function initLti(
       // user straight to the SPA bridge. The frontend then calls /session to
       // swap the ltik for an app JWT (the only LTI claim consumed in this
       // mode is the user identity).
-      if (skipDeepLinking) {
+      if (isLoginOnly) {
         const qs = new URLSearchParams();
         qs.set('lti', '1');
         const target = `${frontend}${launchRedirectPath}?${qs.toString()}`;
@@ -304,6 +472,101 @@ export async function initLti(
           target,
         });
         return lti.redirect(res, target, { newResource: true });
+      }
+
+      // Context-mapping mode (plain external-tool launch, no Deep Linking).
+      // The Moodle course context maps to a platform course: a teacher launch
+      // matches/provisions the course; a student launch resolves it from the
+      // course map. Both land in the app — the teacher to manage groupings, the
+      // student to pick a grouping then a group.
+      if (isContextMapping) {
+        const issuer = getIssuerFromLtiToken(token);
+        const clientId = getClientIdFromLtiToken(token);
+        const deploymentId = getDeploymentIdFromLtiToken(token);
+        const contextId = getContextId(res);
+        const name = getNameFromLtiToken(token) || email;
+        const externalId = getExternalIdFromLti(res);
+
+        logInfo('[LTI] onConnect — context-mapping launch', {
+          email,
+          role: ltiRole,
+          issuer,
+          clientId,
+          deploymentId,
+          contextId,
+        });
+
+        const landOnCourse = (courseId: string) => {
+          const qs = new URLSearchParams();
+          qs.set('courseId', courseId);
+          qs.set('lti', '1');
+          return lti.redirect(res, `${frontend}${launchRedirectPath}?${qs.toString()}`, {
+            newResource: true,
+          });
+        };
+
+        if (ltiRole === 'teacher') {
+          const teacher = await fullAdapter.resolveOrProvisionTeacher(
+            email,
+            name,
+            ltiRole,
+            externalId
+          );
+          if (!teacher) {
+            logWarn('[LTI] onConnect — context-mapping teacher not resolved', { email });
+            return res
+              .status(200)
+              .send(
+                '<div style="font-family:system-ui;padding:24px;">Not authorized. Your LMS role must be Instructor and you need a teacher account.</div>'
+              );
+          }
+          const resolved = await resolveOrProvisionCourseForContext(fullAdapter, res, teacher, {
+            issuer,
+            clientId,
+            deploymentId,
+            contextId,
+            autoMapCourse,
+          });
+          if (!resolved) {
+            logWarn('[LTI] onConnect — context-mapping could not resolve a course', {
+              email,
+              contextId,
+            });
+            return res
+              .status(200)
+              .send(
+                '<div style="font-family:system-ui;padding:24px;">Could not match or create a course for this Moodle course. Please create the course in the app first.</div>'
+              );
+          }
+          logInfo('[LTI] onConnect — context-mapping teacher redirect', {
+            email,
+            courseId: resolved.courseId,
+            created: resolved.created,
+          });
+          return landOnCourse(resolved.courseId);
+        }
+
+        // Student launch: resolve the course from the map the teacher created.
+        const mapped =
+          issuer && clientId && deploymentId && contextId
+            ? await fullAdapter.findCourseMap({ issuer, clientId, deploymentId, contextId })
+            : null;
+        if (!mapped) {
+          logWarn('[LTI] onConnect — context-mapping student launch with no course map', {
+            email,
+            contextId,
+          });
+          return res
+            .status(200)
+            .send(
+              '<div style="font-family:system-ui;padding:24px;">This activity is not set up yet. Ask your teacher to open it once first.</div>'
+            );
+        }
+        logInfo('[LTI] onConnect — context-mapping student redirect', {
+          email,
+          courseId: mapped.courseId,
+        });
+        return landOnCourse(mapped.courseId);
       }
 
       const custom = getCustom(res);
@@ -406,9 +669,11 @@ export async function initLti(
         launchDestination === 'app'
           ? (() => {
               const qs = new URLSearchParams();
+              qs.set('groupingId', resolvedResourceId);
               qs.set('agentId', resolvedResourceId);
               qs.set('lti', '1');
               qs.set('embedded', '1');
+              if (resolvedCourseId) qs.set('courseId', resolvedCourseId);
               if (ltiRole === 'student') qs.set('lock', '1');
               return `${frontend}/lti/launch?${qs.toString()}`;
             })()
@@ -469,7 +734,7 @@ export async function initLti(
 
       const user = await loginAdapter.upsertUser({ email, name, role, externalId });
 
-      if (!skipDeepLinking && autoEnrollStudents && role === 'student') {
+      if (resolvesCourse && autoEnrollStudents && role === 'student') {
         const custom = getCustom(res);
         const issuer = getIssuerFromLtiToken(token);
         const clientId = getClientIdFromLtiToken(token);
@@ -700,6 +965,8 @@ export async function initLti(
       tenantId?: string;
     }>;
     preselectedCourseId?: string;
+    lmsContext?: LtiContextSnapshot;
+    provision?: { courseId: string; created: boolean; needsConfirmation: boolean };
     error?: string;
   }
 
@@ -745,70 +1012,25 @@ export async function initLti(
       isAdmin: teacher.roles?.includes('admin'),
     });
 
-    const isAdminUser = teacher.roles?.includes('admin');
     const issuer = getIssuerFromLtiToken(token);
     const clientId = getClientIdFromLtiToken(token);
     const deploymentId = getDeploymentIdFromLtiToken(token);
     const contextId = getContextId(res);
 
-    const existingMap = await adapter.findCourseMap({ issuer, clientId, deploymentId, contextId });
-
-    if (!existingMap && autoMapCourse) {
-      const candidates = guessLmsCourseIdentifiers(res);
-      let matched = false;
-      for (const candidate of candidates) {
-        const found =
-          (await adapter.findCourseByCourseIdForTeacher(teacher, candidate)) ||
-          (await adapter.findCourseByCourseId(candidate));
-        if (found) {
-          matched = true;
-          if (!isAdminUser) {
-            try {
-              await adapter.ensureTeacherInCourse(found, teacher);
-            } catch (e: any) {
-              logWarn('[LTI] Failed to auto-attach teacher to course (continuing)', {
-                userId: teacher.id,
-                courseId: found.id,
-                message: e?.message,
-              });
-            }
-          }
-          const courseTenant = found.tenantId || adapter.resolveEffectiveTenant();
-          await adapter.upsertCourseMap({
-            issuer,
-            clientId,
-            deploymentId,
-            contextId,
-            courseId: found.id,
-            createdBy: teacher.id,
-            ...(courseTenant ? { tenantId: courseTenant } : {}),
-          });
-          break;
-        }
-      }
-      if (!matched) {
-        logWarn(
-          `[LTI] Course auto-map: no course matched LMS identifiers (contextId=${contextId}, candidates=${JSON.stringify(candidates.slice(0, 12))})`
-        );
-      }
-    }
-
-    const finalMap = await adapter.findCourseMap({ issuer, clientId, deploymentId, contextId });
-
-    if (finalMap && !isAdminUser) {
-      try {
-        const mappedCourse = await adapter.getCourseById(finalMap.courseId);
-        if (mappedCourse) {
-          await adapter.ensureTeacherInCourse(mappedCourse, teacher);
-        }
-      } catch (e: any) {
-        logWarn('[LTI] Failed to auto-attach teacher to mapped course (continuing)', {
-          userId: teacher.id,
-          courseId: finalMap?.courseId,
-          message: e?.message,
-        });
-      }
-    }
+    // Match or provision the platform course for this Moodle context (shared
+    // with the context-mapping launch flow), persisting the course map.
+    const resolved = await resolveOrProvisionCourseForContext(adapter, res, teacher, {
+      issuer,
+      clientId,
+      deploymentId,
+      contextId,
+      autoMapCourse,
+    });
+    const finalMap = resolved ? { courseId: resolved.courseId } : null;
+    const lmsContext = buildLtiContextSnapshot(res);
+    const provisionMeta: DeepLinkSelectionData['provision'] = resolved?.created
+      ? { courseId: resolved.courseId, created: true, needsConfirmation: true }
+      : undefined;
 
     const courses = await adapter.listCoursesForTeacher(teacher);
 
@@ -855,6 +1077,8 @@ export async function initLti(
         : finalMap
           ? finalMap.courseId
           : undefined,
+      lmsContext,
+      provision: provisionMeta,
     };
   };
 
@@ -1078,8 +1302,11 @@ export async function initLti(
       const externalId = getExternalIdFromLti(res);
 
       const courseId = String(req.body?.courseId ?? '').trim();
-      const resourceId = String(req.body?.agentId ?? '').trim();
+      let resourceId = String(req.body?.agentId ?? '').trim();
       const categoryId = String(req.body?.categoryId ?? '').trim();
+      const newGrouping = req.body?.newGrouping as
+        | { name?: string; description?: string; settings?: Record<string, unknown> }
+        | undefined;
       const bindingTypeReq: LtiBindingType = categoryId ? 'category' : 'agent';
 
       const wantsJson =
@@ -1243,6 +1470,17 @@ export async function initLti(
         }
 
         // ── Agent (single resource) binding path ──
+        if (!resourceId && newGrouping?.name?.trim() && adapter.createSelectableResource) {
+          const created = await adapter.createSelectableResource({
+            user: teacher,
+            course,
+            name: String(newGrouping.name).trim(),
+            description: newGrouping.description,
+            settings: newGrouping.settings,
+          });
+          if (created) resourceId = created.id;
+        }
+
         if (!resourceId) {
           return sendErr(
             `Please select ${adapter.resourceLabel === 'Agent' ? 'an' : 'a'} ${adapter.resourceLabel.toLowerCase()}.`

@@ -15,6 +15,19 @@
 export type LtiRole = 'student' | 'teacher';
 
 /**
+ * The integration flow the core runs. Defined here so the package stays
+ * self-contained (portable); the app mirrors these literals in `shared/lti.ts`.
+ *
+ * - `login-only`: launch is treated purely as SSO.
+ * - `context-mapping`: plain external-tool launch (no Deep Linking) — the Moodle
+ *   course context maps to a platform course; teachers manage groupings in-app
+ *   and students self-pick a grouping then a group.
+ * - `deep-linking`: teacher binds the activity to a grouping via the LMS content
+ *   picker (requires Deep Linking).
+ */
+export type LtiConnectMode = 'login-only' | 'context-mapping' | 'deep-linking';
+
+/**
  * Tenant mode hint passed to the deep-link UI. The LTI core never inspects
  * this — it's purely a passthrough so multi-tenant apps can render tenant
  * labels in the course dropdown. Set to `undefined` for single-tenant apps.
@@ -78,6 +91,17 @@ export interface LtiPlatformContext {
   clientId: string;
   deploymentId: string;
   contextId: string;
+}
+
+/** Moodle/LMS course context claims used for on-the-fly course provisioning. */
+export interface LtiContextSnapshot {
+  contextId: string;
+  label?: string;
+  title?: string;
+  type?: string[];
+  lisCourseOfferingSourcedId?: string;
+  lisCourseSectionSourcedId?: string;
+  identifierCandidates: string[];
 }
 
 // ─── Deep Link Item Types ────────────────────────────────────────────────────
@@ -250,6 +274,28 @@ export interface LtiAdapter {
     tenantId?: string
   ): Promise<LtiCourse | null>;
 
+  /**
+   * Optional: create a course stub from LTI context claims when auto-map finds
+   * no match. Return the new course (or null when provisioning is declined).
+   */
+  provisionCourseFromLtiContext?(params: {
+    teacher: LtiUser;
+    platform: LtiPlatformContext;
+    context: LtiContextSnapshot;
+  }): Promise<LtiCourse | null>;
+
+  /**
+   * Optional: create a selectable resource (e.g. a grouping) during deep-link
+   * setup before binding the Moodle activity.
+   */
+  createSelectableResource?(params: {
+    user: LtiUser;
+    course: LtiCourse;
+    name: string;
+    description?: string;
+    settings?: Record<string, unknown>;
+  }): Promise<LtiResource | null>;
+
   // ── Category Operations (optional) ─────────────────────────────────────
 
   listSelectableCategories?(
@@ -383,6 +429,21 @@ export interface LtiInitOptions {
    * Defaults to `false` so existing integrations are unaffected.
    */
   skipDeepLinking?: boolean;
+  /**
+   * The integration flow this deployment runs. Lets the core adapt its launch
+   * behaviour to what the LMS supports:
+   *
+   * - `login-only`: SSO only (equivalent to `skipDeepLinking: true`).
+   * - `context-mapping`: plain external-tool launch (no Deep Linking). The
+   *   Moodle course context is matched/provisioned to a platform course on the
+   *   teacher launch; students resolve from that map and self-pick a grouping.
+   * - `deep-linking`: teacher binds the activity to a grouping via Moodle's
+   *   content picker (requires LMS Deep Linking).
+   *
+   * When omitted, the mode is derived from `skipDeepLinking` for backward
+   * compatibility (`true` -> `login-only`, `false` -> `deep-linking`).
+   */
+  connectMode?: LtiConnectMode;
   devMode?: boolean;
   ltiaas?: boolean;
   tokenMaxAge?: number | false;
