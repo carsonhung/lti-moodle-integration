@@ -7,11 +7,29 @@
  *
  * Drop into your `src/models/` folder and adjust the `ref` targets to match
  * your domain model names.
+ *
+ * ── Applies to the `deep-linking` flow only ──────────────────────────────────
+ * This model is ONLY used by the `deep-linking` connect mode (see
+ * `LTI_CONNECT_MODES` in `shared/lti.ts`), where a teacher binds a specific
+ * activity to a specific resource via Moodle's content picker.
+ *
+ * The HKU Group Signup Moodle deployment does NOT use Deep Linking. It runs in
+ * `context-mapping` (a plain external-tool launch maps the Moodle course context
+ * to a platform course; students then pick a grouping and group in-app) or
+ * `login-only` mode. In those flows nothing is bound at config time, so this
+ * model is inactive on the Moodle path — keep it only if/when Deep Linking is
+ * enabled, or as a portable reference for other LMSs that do support it.
+ *
+ * The `agent` and `category` bindings are generic template examples shipped with
+ * the portable package. The `group` binding is a domain-specific example showing
+ * how a deep-linked activity *would* bind to a single Group so the launch drops
+ * the student straight into that group's signup view — useful as a pattern, not
+ * wired into the current Moodle (context-mapping) launch handler.
  */
 
 import { Schema, model, Document, Types } from 'mongoose';
 
-export type LtiBindingType = 'agent' | 'category';
+export type LtiBindingType = 'agent' | 'category' | 'group';
 
 export interface LtiResourceLinkBindingInterface extends Document {
   tenantId?: string;
@@ -29,6 +47,13 @@ export interface LtiResourceLinkBindingInterface extends Document {
 
   /** Set when bindingType='category' — reference to the Category document */
   categoryId?: Types.ObjectId;
+
+  /**
+   * Set when bindingType='group' — reference to the app's Group document.
+   * Domain-specific example for HKU Group Signup: binds a Moodle activity to a
+   * single group so the LTI launch lands on that group's signup view.
+   */
+  groupId?: Types.ObjectId;
 
   bindingType: LtiBindingType;
 
@@ -49,7 +74,8 @@ const LtiResourceLinkBindingSchema = new Schema(
     courseId: { type: Schema.Types.ObjectId, ref: 'Course', required: true },
     agentId: { type: Schema.Types.ObjectId, ref: 'Agent' },
     categoryId: { type: Schema.Types.ObjectId, ref: 'Category' },
-    bindingType: { type: String, enum: ['agent', 'category'], default: 'agent' },
+    groupId: { type: Schema.Types.ObjectId, ref: 'Group' },
+    bindingType: { type: String, enum: ['agent', 'category', 'group'], default: 'agent' },
 
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   },

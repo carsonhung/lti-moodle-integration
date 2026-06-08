@@ -220,6 +220,7 @@ function buildLtiContextSnapshot(res: express.Response): LtiContextSnapshot {
     token?.platformContext?.lis ||
     token?.['https://purl.imsglobal.org/spec/lti/claim/lis'] ||
     token?.platformContext?.['https://purl.imsglobal.org/spec/lti/claim/lis'];
+  const custom = getCustom(res);
   return {
     contextId: getContextId(res),
     label: safeStr(claim?.label || ctx?.context?.label) || undefined,
@@ -227,6 +228,9 @@ function buildLtiContextSnapshot(res: express.Response): LtiContextSnapshot {
     type: Array.isArray(claim?.type) ? claim.type.map((t: unknown) => safeStr(t)) : undefined,
     lisCourseOfferingSourcedId: safeStr(lis?.course_offering_sourcedid) || undefined,
     lisCourseSectionSourcedId: safeStr(lis?.course_section_sourcedid) || undefined,
+    customCourseId:
+      safeStr(custom?.course_id || custom?.moodle_course_id || custom?.context_id || custom?.contextId) ||
+      undefined,
     identifierCandidates: guessLmsCourseIdentifiers(res),
   };
 }

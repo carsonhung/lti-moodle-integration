@@ -185,9 +185,15 @@ export function inferRoleFromLti(res: express.Response): LtiRole {
     ? (rolesRaw as any[]).map((r) => String(r ?? ''))
     : [];
   const joined = roles.join(' ').toLowerCase();
+  // Treat the common LIS/Moodle instructor-equivalent roles as teacher. Moodle
+  // maps "Teacher" -> Instructor and "Non-editing teacher" -> Instructor (often
+  // with a TeachingAssistant sub-role); ContentDeveloper/Manager also manage a
+  // course context.
   if (
     joined.includes('instructor') ||
     joined.includes('teachingassistant') ||
+    joined.includes('contentdeveloper') ||
+    joined.includes('manager') ||
     joined.includes('administrator')
   ) {
     return 'teacher';

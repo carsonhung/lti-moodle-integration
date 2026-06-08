@@ -101,6 +101,8 @@ export interface LtiContextSnapshot {
   type?: string[];
   lisCourseOfferingSourcedId?: string;
   lisCourseSectionSourcedId?: string;
+  /** Course id passed via a custom launch param, if the LMS sends one. */
+  customCourseId?: string;
   identifierCandidates: string[];
 }
 
