@@ -49,6 +49,7 @@ import {
   guessLmsCourseIdentifiers,
 } from './helpers';
 import { renderDeepLinkLauncher, renderTeacherManagePage } from './deepLinkingUI';
+import jwt from 'jsonwebtoken';
 
 // ltijs is CommonJS-first; keep it simple and typed as any.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -100,6 +101,60 @@ function safeUrlHost(value: string): string {
   } catch {
     return '(invalid-url)';
   }
+}
+
+// ─── Bind tokens (context-mapping per-link grouping binding) ─────────────────
+//
+// Some LMSs (e.g. production HKU Moodle) do not expose Deep Linking, so a
+// teacher cannot bind an activity to a grouping via Moodle's content picker.
+// Instead, the context-mapping launch signs the launch identity into a short-
+// lived "bind token" and hands it to the app SPA. The authenticated app then
+// posts it back to its own bind endpoint, which verifies the signature (so the
+// platform tuple + resourceLinkId can be trusted) and persists the binding.
+// The token only needs to outlive the teacher's in-session grouping pick.
+
+const BIND_TOKEN_TTL_SECONDS = 30 * 60;
+
+export interface LtiBindTokenClaims {
+  issuer: string;
+  clientId: string;
+  deploymentId: string;
+  contextId: string;
+  resourceLinkId: string;
+  courseId: string;
+}
+
+function mintBindToken(secret: string, claims: LtiBindTokenClaims): string {
+  return jwt.sign(claims, secret, { expiresIn: BIND_TOKEN_TTL_SECONDS });
+}
+
+/**
+ * Verify a bind token minted by the context-mapping launch and return its
+ * launch-identity claims. Throws (jsonwebtoken errors) if the token is invalid
+ * or expired. The host app calls this from its bind endpoint with the same
+ * `bindTokenSecret` passed to `initLti`.
+ */
+export function verifyBindToken(secret: string, token: string): LtiBindTokenClaims {
+  const decoded = jwt.verify(token, secret) as jwt.JwtPayload & Partial<LtiBindTokenClaims>;
+  if (
+    !decoded ||
+    !decoded.issuer ||
+    !decoded.clientId ||
+    !decoded.deploymentId ||
+    !decoded.contextId ||
+    typeof decoded.resourceLinkId !== 'string' ||
+    !decoded.courseId
+  ) {
+    throw new Error('Invalid bind token payload');
+  }
+  return {
+    issuer: decoded.issuer,
+    clientId: decoded.clientId,
+    deploymentId: decoded.deploymentId,
+    contextId: decoded.contextId,
+    resourceLinkId: decoded.resourceLinkId,
+    courseId: decoded.courseId,
+  };
 }
 
 /**
@@ -488,6 +543,7 @@ export async function initLti(
         const clientId = getClientIdFromLtiToken(token);
         const deploymentId = getDeploymentIdFromLtiToken(token);
         const contextId = getContextId(res);
+        const resourceLinkId = getResourceLinkId(res);
         const name = getNameFromLtiToken(token) || email;
         const externalId = getExternalIdFromLti(res);
 
@@ -498,12 +554,55 @@ export async function initLti(
           clientId,
           deploymentId,
           contextId,
+          resourceLinkId,
         });
 
-        const landOnCourse = (courseId: string) => {
+        // A binding ties THIS Moodle activity (resourceLinkId) to one grouping.
+        // It is the per-link target on top of the course-level context map.
+        const findBinding = () =>
+          issuer && clientId && deploymentId && contextId && resourceLinkId
+            ? fullAdapter.findResourceBinding({
+                issuer,
+                clientId,
+                deploymentId,
+                contextId,
+                resourceLinkId,
+              })
+            : Promise.resolve(null);
+
+        const mintTokenFor = (courseId: string): string | null => {
+          if (!opts.bindTokenSecret) return null;
+          if (!resourceLinkId) return null;
+          return mintBindToken(opts.bindTokenSecret, {
+            issuer,
+            clientId,
+            deploymentId,
+            contextId,
+            resourceLinkId,
+            courseId,
+          });
+        };
+
+        const landOnCourse = (courseId: string, bindToken?: string | null) => {
           const qs = new URLSearchParams();
           qs.set('courseId', courseId);
           qs.set('lti', '1');
+          if (bindToken) qs.set('bindToken', bindToken);
+          return lti.redirect(res, `${frontend}${launchRedirectPath}?${qs.toString()}`, {
+            newResource: true,
+          });
+        };
+
+        const landOnGrouping = (
+          courseId: string,
+          groupingId: string,
+          bindToken?: string | null
+        ) => {
+          const qs = new URLSearchParams();
+          qs.set('courseId', courseId);
+          qs.set('groupingId', groupingId);
+          qs.set('lti', '1');
+          if (bindToken) qs.set('bindToken', bindToken);
           return lti.redirect(res, `${frontend}${launchRedirectPath}?${qs.toString()}`, {
             newResource: true,
           });
@@ -542,12 +641,28 @@ export async function initLti(
                 '<div style="font-family:system-ui;padding:24px;">Could not match or create a course for this Moodle course. Please create the course in the app first.</div>'
               );
           }
-          logInfo('[LTI] onConnect — context-mapping teacher redirect', {
+
+          // A bind token always rides along on a teacher launch so the teacher
+          // can bind an unbound link OR re-point an already-bound one in-app.
+          const bindToken = mintTokenFor(resolved.courseId);
+          const binding = await findBinding();
+
+          if (binding?.resourceId) {
+            logInfo('[LTI] onConnect — context-mapping teacher redirect to bound grouping', {
+              email,
+              courseId: resolved.courseId,
+              groupingId: binding.resourceId,
+            });
+            return landOnGrouping(resolved.courseId, binding.resourceId, bindToken);
+          }
+
+          logInfo('[LTI] onConnect — context-mapping teacher redirect (link unbound, bind prompt)', {
             email,
             courseId: resolved.courseId,
             created: resolved.created,
+            hasBindToken: !!bindToken,
           });
-          return landOnCourse(resolved.courseId);
+          return landOnCourse(resolved.courseId, bindToken);
         }
 
         // Student launch: resolve the course from the map the teacher created.
@@ -566,11 +681,30 @@ export async function initLti(
               '<div style="font-family:system-ui;padding:24px;">This activity is not set up yet. Ask your teacher to open it once first.</div>'
             );
         }
-        logInfo('[LTI] onConnect — context-mapping student redirect', {
+
+        const binding = await findBinding();
+        if (binding?.resourceId) {
+          logInfo('[LTI] onConnect — context-mapping student redirect to bound grouping', {
+            email,
+            courseId: mapped.courseId,
+            groupingId: binding.resourceId,
+          });
+          return landOnGrouping(mapped.courseId, binding.resourceId);
+        }
+
+        // The course is mapped but this specific activity has not been linked to
+        // a grouping yet. Students get a dead-end page (no grouping picker) and
+        // are told to contact their teacher, who binds the link on their launch.
+        logWarn('[LTI] onConnect — context-mapping student launch, link not bound to a grouping', {
           email,
           courseId: mapped.courseId,
+          resourceLinkId,
         });
-        return landOnCourse(mapped.courseId);
+        return res
+          .status(200)
+          .send(
+            '<div style="font-family:system-ui;padding:24px;">This activity has not been linked to a group sign-up yet. Please contact your teacher to set it up.</div>'
+          );
       }
 
       const custom = getCustom(res);

@@ -155,6 +155,8 @@ LTI_ENABLED=true
 LTI_ENCRYPTION_KEY=<32-character hex string>
 LTI_DB_URL=mongodb://localhost/lti      # or reuse MONGO_URI
 LTI_MOUNT_PATH=/api/v1/lti
+LTI_CONNECT_MODE=context-mapping         # login-only | context-mapping | deep-linking
+LTI_BIND_TOKEN_SECRET=<random string>    # signs the context-mapping per-link grouping bind token
 LTI_LTIAAS_MODE=true                     # bypasses third-party cookie issues
 
 LTI_PLATFORM_URL=https://moodle.example.com

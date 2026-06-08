@@ -51,7 +51,32 @@ Types in `types.ts` (`LtiUser`, `LtiCourse`, `LtiResource`, `LtiPlatformContext`
 
 `helpers.ts` has no side effects, no DB access, no Express middleware — just token parsing and URL helpers. Use them anywhere.
 
-## LTI 1.3 Flow
+## Connect Modes
+
+A deployment picks one flow via `connectMode` (`LtiInitOptions`, mirrored by the
+app's `LTI_CONNECT_MODE` env). All modes share the same OIDC login + launch
+handshake; they differ in what happens after the launch JWT is validated.
+
+| Mode | LMS requirement | Launch resolves to | How a target is bound | Adapter |
+|------|-----------------|--------------------|-----------------------|---------|
+| `login-only` | none (SSO only) | the app dashboard | nothing — identity only | `LtiLoginOnlyAdapter` (~3 methods) |
+| `context-mapping` | plain external tool | a course (then in-app grouping pick) | course via `lti_course_maps` | full `LtiAdapter` |
+| `context-mapping` + per-link binding | plain external tool | a specific grouping | `resource_link_id` → grouping, set in-app via a bind token | full `LtiAdapter` |
+| `deep-linking` | LMS "Select content" | a specific resource | teacher binds via Moodle's content picker | full `LtiAdapter` |
+
+**Recommended:** `login-only` or `context-mapping` (optionally with per-link
+binding). `deep-linking` is the richest but only works when the LMS exposes Deep
+Linking — many production Moodle instances (including HKU's) disable it, so do
+not depend on it unless you have confirmed "Select content" is available.
+
+The sections below describe each flow; the generic launch diagram immediately
+following is the **deep-linking** case.
+
+## LTI 1.3 Flow (deep-linking)
+
+This is the `deep-linking` mode: the launch reads a resource-link binding the
+teacher created via Moodle's content picker. See **Connect Modes** above for the
+other flows.
 
 ```
 LMS (Moodle)                    Tool (this module)              Your App (Vue)
@@ -75,8 +100,12 @@ LMS (Moodle)                    Tool (this module)              Your App (Vue)
      │                               │───── { token, role } ──────▶ │
      │                               │                              │
      │                               │  9. Vue Router navigates to  │
-     │                               │     /agents/:id, /lti/category/:id, etc.
+     │                               │     the bound target, e.g. /courses/:id?grouping=:groupingId
 ```
+
+(Step 9's target is project-specific: this app lands on
+`/courses/:id?grouping=:groupingId`; another app might land on `/agents/:id` or
+`/lti/category/:id`.)
 
 ## Deep Linking Flows
 
@@ -91,17 +120,90 @@ In **inline mode**, the Vue form posts to `/deeplink/submit?format=json`, receiv
 
 In **popup mode**, the Vue form is opened in a separate browser window. The popup posts the selection back to the launcher iframe via `window.postMessage`, which then submits the deep link response form to Moodle. (For reconfigure, no deep-link return URL is present, so the popup just closes after persisting the binding.)
 
+## Context-Mapping with Per-Link Grouping Binding
+
+Some LMS deployments (e.g. the HKU Moodle instance) do **not** expose Deep Linking
+/ "Select content" when adding an external tool. In that case the activity is a
+plain external-tool launch, so the teacher can never use the content picker to bind
+an activity to a grouping.
+
+This flow makes each Moodle activity target a specific grouping **without Deep
+Linking**, by binding on `resource_link_id`. That claim is sent on *every* LTI 1.3
+resource-link launch (not just Deep Linking) and is **unique and stable per
+activity**, so a second external-tool activity in the same Moodle course gets its
+own `resource_link_id` and can be bound to a different grouping.
+
+The course is still resolved from the Moodle context (`lti_course_maps`) exactly as
+in plain context-mapping; the binding only adds the grouping target on top.
+
+```mermaid
+flowchart TD
+    A["Teacher adds External Tool activity #1<br/>(plain launch — no Deep Linking)"] --> B["Teacher clicks the activity"]
+    B --> C{"Binding exists for<br/>this resource_link_id?"}
+    C -->|No| D["Land teacher on the course:<br/>pick or create a grouping<br/>for this link → save binding"]
+    C -->|Yes| E["Redirect straight to the bound grouping<br/>/courses/:id?grouping=:groupingId"]
+
+    F["Student clicks activity #1"] --> G{"Binding exists?"}
+    G -->|Yes| H["Go straight to the grouping → enroll"]
+    G -->|No| I["Show 'not set up yet' page:<br/>ask the student to contact their teacher"]
+
+    J["Teacher adds External Tool activity #2<br/>(new resource_link_id)"] --> K["Binds to a different grouping"]
+```
+
+### Resolution matrix
+
+| Launcher | Binding for `resource_link_id`? | Outcome |
+|----------|---------------------------------|---------|
+| Teacher  | Yes | Redirect to the bound grouping (manage view via role). |
+| Teacher  | No  | Land on the course; teacher picks/creates a grouping, which saves the binding. |
+| Student  | Yes | Redirect to the bound grouping; auto-enrolled into the course, then joins a group. |
+| Student  | No  | Show a "this activity isn't set up yet — please contact your teacher" page. **No grouping picker fallback** for students. |
+
+### Bind-token handshake
+
+The `resource_link_id` and the platform tuple are known only inside the LTI core
+at launch, but the teacher chooses the grouping later in the SPA (authenticated
+by the app JWT, not the LTI token). A short-lived signed **bind token** bridges
+the gap: the core mints it on a teacher launch and the SPA returns it to an
+authenticated bind endpoint, which verifies it before persisting the binding.
+
+```mermaid
+sequenceDiagram
+    participant M as Moodle
+    participant Core as LTI core (onConnect)
+    participant SPA as App SPA
+    participant API as App bind endpoint
+    M->>Core: Teacher launch (resource_link_id, no binding)
+    Core->>Core: resolve course (lti_course_maps); mint signed bindToken
+    Core->>SPA: redirect /lti/launch?courseId=…&bindToken=…
+    SPA->>SPA: show "link this activity to a grouping" banner
+    SPA->>API: POST /api/v1/lti/bindings { bindToken, groupingId | newGrouping }
+    API->>API: verifyBindToken; authz teacher/admin; upsertResourceBinding (resourceId = groupingId)
+    API->>SPA: { success, groupingId }
+    SPA->>SPA: navigate to ?grouping=groupingId
+    Note over M,SPA: Later launches (any role) resolve the binding and go straight to the grouping
+```
+
+### Storage
+
+Reuses `lti_resource_bindings` keyed on
+`(issuer, clientId, deploymentId, contextId, resourceLinkId)`. The grouping id is
+stored in the existing `resourceId` slot (in this domain, a bound "resource" is a
+grouping; the Mongoose example persists it in `agentId`). No schema change is
+required — only the context-mapping launch path is extended to read the binding,
+and the new bind endpoint writes it.
+
 ## Storage Model
 
 Two LTI-specific tables (or Mongoose collections):
 
 ### `lti_course_maps`
 
-One row per **LMS course context**. Maps `(issuer, clientId, deploymentId, contextId)` → your app's `courseId`. Created on Deep Linking + auto-mapping; reused on subsequent launches from the same Moodle course.
+One row per **LMS course context**. Maps `(issuer, clientId, deploymentId, contextId)` → your app's `courseId`. Created on a deep-linking setup, on auto-mapping, **and on a context-mapping teacher launch** (when the teacher's course is matched/provisioned); reused on subsequent launches from the same Moodle course.
 
 ### `lti_resource_bindings`
 
-One row per **LMS activity** (resource link). Adds `resourceLinkId` to the same context tuple, plus either `resourceId` (single-resource binding) or `categoryId` (category binding). This is what the launch flow reads to decide where to redirect.
+One row per **LMS activity** (resource link). Adds `resourceLinkId` to the same context tuple, plus either `resourceId` (single-resource binding) or `categoryId` (category binding). This is what the launch flow reads to decide where to redirect. In **deep-linking** it is written by the content-picker submit; in **context-mapping per-link binding** it is written by the app's bind endpoint (`POST /api/v1/lti/bindings`), and `resourceId` holds the **grouping** id.
 
 In addition, ltijs maintains its own internal tables (`lti_*`) for storing platform metadata, public keys, nonces, etc. These are managed automatically; you don't write to them directly.
 

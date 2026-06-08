@@ -22,6 +22,23 @@ If `LTI_MOUNT_PATH=/api/v1/lti` and your tool is hosted at `https://app.example.
 
 Verify the keyset URL works in a browser — it should return a JSON object like `{"keys":[{"kty":"RSA",...}]}`.
 
+## Choose a connect mode first
+
+How you register the tool depends on `LTI_CONNECT_MODE`:
+
+- **`context-mapping` (recommended, no Deep Linking)** — register a **plain** external tool. Do
+  NOT enable "Select content"; teachers add the activity directly. The launch maps the Moodle
+  course to a platform course, and (optionally) each activity binds to a grouping **in the app**
+  using its `resource_link_id`. Use this when your Moodle does not expose Deep Linking — which is
+  the case on many production instances, including HKU's.
+- **`login-only`** — same plain registration; the launch is treated purely as SSO.
+- **`deep-linking`** — requires "Supports Deep Linking (Content-Item Message) = YES" and a Content
+  Selection URL; teachers bind the activity via Moodle's content picker.
+
+The deep-linking-specific fields below (marked *for Deep Linking*) are only needed for the
+`deep-linking` mode. For `context-mapping` / `login-only`, leave "Supports Deep Linking" **off**
+and skip the Content Selection URL.
+
 ## Step 1 — Register the External Tool in Moodle
 
 **Site administration → Plugins → Activity modules → External tool → Manage tools → configure a tool manually**
@@ -84,7 +101,25 @@ Restart your backend. On boot you should see a log line like:
 
 Alternatively, you can register the platform at runtime via the admin UI (`LtiPlatformsAdmin.vue`) or by POSTing to `/api/v1/lti/platforms`.
 
+For `context-mapping` / `login-only`, also set `LTI_BIND_TOKEN_SECRET` to a random string in your
+backend `.env` (it signs the per-link grouping bind token used by the in-app binding step). Any
+value works as long as it stays constant.
+
 ## Step 3 — Add the Activity to a Course
+
+### Context-mapping (recommended, no Deep Linking)
+
+1. As a teacher, open a Moodle course.
+2. **Turn editing on** → Add an activity → **External tool**.
+3. Pick your tool from the **Preconfigured tool** dropdown. Do **not** click "Select content".
+4. Give the activity a name and **Save and return to course**.
+5. Click the activity once as the teacher. You land in the app on the matched/auto-created course
+   with a "Link this Moodle activity to a grouping" banner — pick an existing grouping or create
+   one. From now on, every launch of this activity goes straight to that grouping.
+6. Add a second External tool activity to bind a different grouping (it gets its own
+   `resource_link_id`).
+
+### Deep-linking (only if your Moodle exposes "Select content")
 
 1. As a teacher, open a Moodle course.
 2. **Turn editing on** → Add an activity → **External tool**.
@@ -105,9 +140,21 @@ The activity is now live for students.
 
 ## Troubleshooting
 
-### Launch shows "This activity is not configured yet"
+### Launch shows "This activity is not configured yet" (deep-linking)
 
 The teacher hasn't used Deep Linking. Click the activity's settings → **Select content** to configure.
+
+### Student sees "this activity has not been linked to a group sign-up yet" (context-mapping)
+
+Expected when a teacher hasn't bound the activity yet. The teacher must click the activity once
+(they get the "Link this Moodle activity to a grouping" banner) and choose a grouping. Students are
+intentionally not shown a grouping picker for an unbound activity.
+
+### Teacher doesn't see the "Link this activity to a grouping" banner (context-mapping)
+
+Make sure `LTI_BIND_TOKEN_SECRET` is set in the backend `.env` — without it the core skips minting
+the bind token, so the SPA can't show the banner. Also confirm the launching user resolves to a
+teacher/admin on the matched course.
 
 ### Launch shows "LTI launch did not include an email"
 

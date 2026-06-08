@@ -475,4 +475,14 @@ export interface LtiInitOptions {
    * Defaults to `/lti/launch`.
    */
   loginOnlyLaunchPath?: string;
+  /**
+   * Secret used to sign the short-lived "bind token" minted on a context-mapping
+   * teacher launch that has no grouping binding yet. The app's bind endpoint
+   * verifies the token with the same secret before persisting the binding, so
+   * the launch identity (platform tuple + resourceLinkId + courseId) cannot be
+   * forged by the client. When omitted, the context-mapping flow skips minting
+   * bind tokens (teachers still land on the course, but the in-app bind prompt
+   * is unavailable).
+   */
+  bindTokenSecret?: string;
 }

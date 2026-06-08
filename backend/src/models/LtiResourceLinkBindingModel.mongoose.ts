@@ -25,6 +25,11 @@
  * how a deep-linked activity *would* bind to a single Group so the launch drops
  * the student straight into that group's signup view — useful as a pattern, not
  * wired into the current Moodle (context-mapping) launch handler.
+ *
+ * A binding targets exactly ONE resource (one agent, one category, or one
+ * group). To launch MULTIPLE resources from a single activity, use the
+ * `category` binding: point it at a category that contains the resources you
+ * want, rather than binding the activity to many resources directly.
  */
 
 import { Schema, model, Document, Types } from 'mongoose';

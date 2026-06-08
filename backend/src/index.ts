@@ -24,7 +24,8 @@
  * ```
  */
 
-export { initLti, setLtiLogger, getLtiProvider } from './core';
+export { initLti, setLtiLogger, getLtiProvider, verifyBindToken } from './core';
+export type { LtiBindTokenClaims } from './core';
 export { createLtiAdminRouter } from './adminRouter';
 export { testPlatformConnection } from './platformConnectionTest';
 export type {
