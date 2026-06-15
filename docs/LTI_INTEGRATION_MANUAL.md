@@ -25,6 +25,7 @@ form an AI coding agent can execute.
 9. Per-link grouping binding without Deep Linking
 10. Troubleshooting
 11. Verification checklist
+12. LTI 1.0a / 1.1 and grade passback (optional)
 
 ---
 
@@ -345,6 +346,12 @@ Set these in the backend environment (gate the whole subsystem behind
 | `LTI_CONNECT_MODE` | `login-only` \| `context-mapping` \| `deep-linking`. |
 | `LTI_BIND_TOKEN_SECRET` | Signs the short-lived bind token used by context-mapping per-link binding. Override in production. |
 | `LTI_PLATFORM_*` | Optional: auto-register one platform on boot (URL, client id, auth/token/keyset endpoints). |
+| `LTI_LEGACY_ENABLED` | Optional: enable the LTI 1.0a/1.1 path (off by default). Requires a `consumerStore`. |
+| `LTI_LEGACY_MOUNT` | Subpath (under `LTI_MOUNT_PATH`) for the legacy router. Default `/legacy`. |
+| `LTI_LEGACY_TIMESTAMP_WINDOW_S` / `LTI_LEGACY_NONCE_TTL_MS` | OAuth 1.0a replay-protection tuning. |
+| `LTI_LEGACY_DEEP_LINKING` | Optional: enable LTI 1.1 Content-Item deep linking. |
+| `LTI_LAUNCH_TICKET_SECRET` | Signs the 1.1 session-bridge launch ticket (falls back to `LTI_BIND_TOKEN_SECRET`). |
+| `LTI_AGS_PROTOTYPE` | Optional: enable the experimental LTI 1.3 AGS grade-passback prototype. |
 
 ---
 
@@ -403,3 +410,53 @@ id stored in the resource slot. No schema change is required.
      auto-enrolled.
    - **deep-linking:** launch as a teacher → content picker → save → relaunch as
      a student → land on the bound resource.
+
+---
+
+## 12. LTI 1.0a / 1.1 and grade passback (optional)
+
+Everything above describes the LTI **1.3** path. Some institutions still run an
+LMS (or configuration) that only speaks the older **LTI 1.0a / 1.1** standard: a
+single OAuth 1.0a HMAC-SHA1-signed form POST authenticated by a *shared consumer
+key/secret*, with no OIDC login round-trip and no signed JWT. The package can
+accept those launches in parallel with 1.3. It is **off by default**; the 1.3
+behaviour is unchanged unless you opt in.
+
+**Enable it** by passing `legacyLti: true` to `initLti`, plus:
+
+- a `consumerStore` (implements `LtiConsumerStore.resolveConsumer` — returns the
+  shared secret for an incoming `oauth_consumer_key`; **required**), and
+- a `launchTicketSecret` (`LTI_LAUNCH_TICKET_SECRET`, falls back to the bind-token
+  secret) used to sign the session-bridge ticket.
+
+The legacy router mounts at `${LTI_MOUNT_PATH}/legacy` (configurable via
+`LTI_LEGACY_MOUNT`); register `…/legacy/launch` as the tool URL in the old LMS.
+See the README's "LTI 1.0a / 1.1 support" section for the consumer store /
+consumer-admin wiring, and `docs/MOODLE_SETUP.md` for the Moodle-side legacy
+tool registration.
+
+**Session bridge.** A 1.1 launch has no `ltik`; after a valid OAuth 1.0a launch
+the router mints a short-lived signed **launch ticket** and redirects to
+`/lti/launch?ticket=…`. The shipped launch views detect `?ticket=` and exchange
+it at the legacy `/session` endpoint — same UX as 1.3.
+
+**Grade passback (both protocols).** The launch records the LMS grade target (1.1
+Basic Outcomes service URL + `sourcedId`, or 1.3 AGS endpoint) in an
+`LtiGradeLinkStore`. Push a score with the single `sendScore()` facade — it
+dispatches to LTI 1.1 Basic Outcomes or, behind `agsPrototype` /
+`LTI_AGS_PROTOTYPE`, the **experimental** LTI 1.3 AGS prototype.
+
+**Production notes.** The default nonce + grade-link stores are in-memory
+(single-instance); supply durable shared implementations for multi-instance
+deployments. Keep the OAuth 1.0a timestamp window tight and clocks synced. Shared
+secrets are long-lived bearer credentials — store them encrypted and rotate via
+the consumer admin (which never returns a secret).
+
+**Troubleshooting (legacy):**
+
+| Symptom | Cause / fix |
+|---|---|
+| Legacy launch rejected with a signature error | Consumer key/secret mismatch, or a reverse proxy rewrote the launch URL/body so the OAuth base string no longer matches. Ensure `toolBaseUrl`/proxy preserve the exact launch URL. |
+| Legacy launch rejected as "expired"/"replay" | Server clock skew beyond `LTI_LEGACY_TIMESTAMP_WINDOW_S`, or a shared nonce store is needed across instances. |
+| 1.1 SPA shows "Missing ltik / ticket" | The `?ticket=` param was stripped, or `launchTicketSecret` is unset so no ticket was minted. |
+| `sendScore()` reports no grade link | The launch didn't carry an outcome service / AGS endpoint (enable grades in the LMS activity), or the in-memory store was lost on restart. |

@@ -194,6 +194,37 @@ Common causes:
 
 Enable debug mode by visiting your deep link URL with `?debug=1` — the page will dump diagnostic events and POST them to `/deeplink/diag` so they appear in your backend logs.
 
+## Legacy LTI 1.0a / 1.1 (older LMS, OAuth 1.0a)
+
+If your LMS only supports the older **LTI 1.0a / 1.1** standard (a shared
+consumer-key/secret instead of OIDC + JWK), enable the legacy path in the backend
+(`legacyLti: true`, plus a `consumerStore` and `LTI_LAUNCH_TICKET_SECRET` — see the
+README's "LTI 1.0a / 1.1 support" section). Then register a **legacy External
+Tool** in Moodle (Site administration → Plugins → External tool → Manage tools →
+*configure a tool manually*):
+
+| Field in Moodle | Value |
+|---|---|
+| Tool URL | `https://app.example.com/api/v1/lti/legacy/launch` |
+| LTI version | **LTI 1.0/1.1** |
+| Consumer key | the key you created in the consumer admin |
+| Shared secret | the matching secret |
+| Default launch container | New window / Embed, as you prefer |
+| Share launcher's name/email with tool | **Always** (the tool needs the user identity) |
+
+For **grade passback** (LTI 1.1 Basic Outcomes), set **"Accept grades from the
+tool = Always"** and add the activity to the gradebook. The launch then includes
+the `lis_outcome_service_url` + `lis_result_sourcedid` the module records for
+`sendScore()`.
+
+For **Content-Item deep linking** (teacher picks content), enable
+`legacyDeepLinking` in the backend and set **"Supports Deep Linking (Content-Item
+Message) = Yes"** with the same launch URL as the Content Selection URL.
+
+> The legacy mount subpath defaults to `/legacy` (configurable via
+> `LTI_LEGACY_MOUNT`). The 1.3 registration above is unaffected — both can run side
+> by side against the same app.
+
 ## Platform-Specific Notes
 
 ### Canvas

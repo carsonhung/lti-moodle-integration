@@ -45,7 +45,7 @@ This is what makes the module portable. You can switch from MongoDB to Postgres 
 
 ### 2. Shared Types Are Protocol-Agnostic
 
-Types in `types.ts` (`LtiUser`, `LtiCourse`, `LtiResource`, `LtiPlatformContext`, etc.) describe **domain concepts**, not protocol details. If a future LTI 1.0/1.1 engine is added, both protocols would map their payloads to the same shared types.
+Types in `types.ts` (`LtiUser`, `LtiCourse`, `LtiResource`, `LtiPlatformContext`, etc.) describe **domain concepts**, not protocol details. Both the LTI 1.3 path and the LTI 1.0a/1.1 path map their (very different) wire payloads onto the same shared types via a `NormalizedLaunch` value, then call **one** handler — see "Normalized launch handling" below.
 
 ### 3. Helpers Are Pure Functions
 
@@ -71,6 +71,65 @@ not depend on it unless you have confirmed "Select content" is available.
 
 The sections below describe each flow; the generic launch diagram immediately
 following is the **deep-linking** case.
+
+## Normalized launch handling (1.3 + 1.0a/1.1)
+
+Both protocols converge on a single code path. Each transport adapter builds a
+`NormalizedLaunch` — a protocol-agnostic snapshot of the launch (version, user
+identity + roles, context/resource-link identifiers, custom params, the resolved
+app role, and the grade-link target if any) — and passes it to
+`handleNormalizedLaunch()` in `launchHandler.ts`:
+
+```
+LTI 1.3 (ltijs onConnect)  ─┐
+                            ├─▶  NormalizedLaunch  ─▶  handleNormalizedLaunch()
+LTI 1.0a/1.1 (OAuth1 POST) ─┘                          (provision course, enroll,
+                                                        resolve role, mint session)
+```
+
+This keeps `core.ts` (the ltijs/1.3 orchestration) and `legacy/lti11.ts` (the
+1.0a/1.1 router) thin: each only does transport-specific validation, then defers
+all the domain work to the shared handler — which still calls only the adapter.
+
+## LTI 1.0a / 1.1 path (legacy, optional)
+
+Off by default; enabled with `legacyLti`. Unlike 1.3 there is no OIDC round-trip
+or JWK discovery — the LMS sends a single OAuth 1.0a HMAC-SHA1-signed form POST
+keyed by a shared consumer secret.
+
+```
+Legacy LMS                     Tool (legacy router)             Your App (SPA)
+     │                               │                              │
+     │  1. Signed launch POST        │                              │
+     │  POST /lti/legacy/launch ────▶│                              │
+     │                               │  2. Verify OAuth 1.0a sig    │
+     │                               │     (consumerStore secret,   │
+     │                               │      timestamp + nonceStore) │
+     │                               │  3. Build NormalizedLaunch   │
+     │                               │     → handleNormalizedLaunch │
+     │                               │  4. Record grade link        │
+     │                               │  5. Mint signed launch ticket│
+     │                               │  6. Redirect ?ticket=… ─────▶│
+     │                               │                              │
+     │                               │  7. GET /legacy/session ◀────│
+     │                               │  8. Verify ticket → app JWT ─▶│
+```
+
+Key components: `legacy/oauth1.ts` (RFC 5849 HMAC-SHA1 verify/sign with
+`oauth_body_hash`), `legacy/nonceStore.ts` (replay protection),
+`legacy/lti11.ts` (router + param→`NormalizedLaunch` mapping + ticket bridge),
+`legacy/contentItem.ts` (Content-Item deep linking return form), and
+`legacy/outcomes.ts` (Basic Outcomes grade passback). The **launch ticket** is
+the 1.1 analogue of ltijs's `ltik`: a short-lived signed token the SPA exchanges
+for an app JWT, since there is no ltijs session for legacy launches.
+
+### Grade passback
+
+A launch records its grade target (1.1 Basic Outcomes service URL + `sourcedId`,
+or 1.3 AGS endpoint) in an `LtiGradeLinkStore`. The host calls one facade,
+`sendScore()` (`grades/sendScore.ts`), which dispatches to either
+`legacy/outcomes.ts` (1.1) or `grades/ags.ts` (1.3 AGS, experimental). The 1.3
+AGS prototype is gated behind `agsPrototype` and is **not** production-hardened.
 
 ## LTI 1.3 Flow (deep-linking)
 

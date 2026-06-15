@@ -17,19 +17,30 @@ import axios from 'axios';
 
 let ltiBase = '/api/v1/lti';
 let apiBase = '/api/v1';
+let legacyBase = '';
 
 /**
  * Configure the API base paths once at app startup, before any LTI views
  * mount. Pass the same path you mounted ltijs under (the value of
- * `LTI_MOUNT_PATH` env var).
+ * `LTI_MOUNT_PATH` env var). `legacyBase` is the LTI 1.0a/1.1 router mount
+ * (defaults to `${ltiBase}/legacy`, matching `LTI_LEGACY_MOUNT`).
  */
-export function configureLtiApi(options: { ltiBase?: string; apiBase?: string }) {
+export function configureLtiApi(options: {
+  ltiBase?: string;
+  apiBase?: string;
+  legacyBase?: string;
+}) {
   if (options.ltiBase) ltiBase = options.ltiBase.replace(/\/+$/, '');
   if (options.apiBase) apiBase = options.apiBase.replace(/\/+$/, '');
+  if (options.legacyBase) legacyBase = options.legacyBase.replace(/\/+$/, '');
 }
 
 export function getLtiBase(): string {
   return ltiBase;
+}
+
+export function getLtiLegacyBase(): string {
+  return legacyBase || `${ltiBase}/legacy`;
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
@@ -126,6 +137,23 @@ export async function getLtiSession(ltik: string): Promise<LtiSessionResponse> {
   });
   if (!data?.success || !data?.token || !data?.expiresIn) {
     throw new Error(data?.message || 'Failed to bridge LTI launch to an application session.');
+  }
+  return data;
+}
+
+/**
+ * Exchange a short-lived LTI 1.0a/1.1 launch ticket (`ticket` query param,
+ * present only on legacy launches) for an application JWT via the legacy
+ * `/session` endpoint. The 1.1 flow has no ltijs `ltik`; the signed ticket is
+ * minted server-side after a valid OAuth 1.0a launch.
+ */
+export async function getLtiSessionByTicket(ticket: string): Promise<LtiSessionResponse> {
+  const { data } = await axios.get(`${getLtiLegacyBase()}/session`, {
+    params: { ticket },
+    withCredentials: false,
+  });
+  if (!data?.success || !data?.token || !data?.expiresIn) {
+    throw new Error(data?.message || 'Failed to bridge LTI 1.1 launch to an application session.');
   }
   return data;
 }

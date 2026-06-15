@@ -20,7 +20,24 @@ import type {
   LtiTenantMode,
   LtiContextSnapshot,
   LtiConnectMode,
+  NormalizedLaunch,
+  LtiGradeLinkStore,
 } from './types';
+import { logInfo, logWarn, logError } from './logger';
+import {
+  handleNormalizedLaunch,
+  resolveOrProvisionCourseForContext,
+  type NormalizedLaunchContext,
+} from './launchHandler';
+import {
+  DEFAULT_LEGACY_MOUNT_SUBPATH,
+  DEFAULT_LEGACY_TIMESTAMP_WINDOW_S,
+  DEFAULT_LEGACY_NONCE_TTL_MS,
+} from './constants';
+import { createInMemoryNonceStore } from './legacy/nonceStore';
+import { createInMemoryGradeLinkStore } from './stores/gradeLinkStore';
+import { createLti11Router } from './legacy/lti11';
+import { registerSendScore } from './grades/sendScore';
 
 // Integration flows the core supports. Kept local so the package stays portable;
 // the app mirrors these in `shared/lti.ts`.
@@ -49,51 +66,14 @@ import {
   guessLmsCourseIdentifiers,
 } from './helpers';
 import { renderDeepLinkLauncher, renderTeacherManagePage } from './deepLinkingUI';
-import jwt from 'jsonwebtoken';
 
 // ltijs is CommonJS-first; keep it simple and typed as any.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const lti: any = require('ltijs').Provider;
 
-// ─── Logger (graceful fallback to console) ───────────────────────────────────
+// ─── Logger (shared, graceful fallback to console) ───────────────────────────
 
-type Logger = {
-  info: (...a: any[]) => void;
-  warn: (...a: any[]) => void;
-  error: (...a: any[]) => void;
-};
-
-let logger: Logger = { info: console.log, warn: console.warn, error: console.error };
-
-/**
- * Inject a project-specific logger before calling initLti. The core wraps
- * structured metadata into a single string before forwarding so any logger
- * that accepts plain strings will work.
- */
-export function setLtiLogger(custom: Logger): void {
-  logger = custom;
-}
-
-function formatLogMeta(msg: string, meta?: any): string {
-  if (!meta || (typeof meta === 'object' && Object.keys(meta).length === 0)) {
-    return msg;
-  }
-  try {
-    return `${msg} ${JSON.stringify(meta)}`;
-  } catch {
-    return `${msg} {"meta":"[unserializable]"}`;
-  }
-}
-
-function logInfo(msg: string, meta?: any) {
-  logger.info(formatLogMeta(msg, meta));
-}
-function logWarn(msg: string, meta?: any) {
-  logger.warn(formatLogMeta(msg, meta));
-}
-function logError(msg: string, meta?: any) {
-  logger.error(formatLogMeta(msg, meta));
-}
+export { setLtiLogger } from './logger';
 
 function safeUrlHost(value: string): string {
   try {
@@ -105,57 +85,12 @@ function safeUrlHost(value: string): string {
 
 // ─── Bind tokens (context-mapping per-link grouping binding) ─────────────────
 //
-// Some LMSs (e.g. production HKU Moodle) do not expose Deep Linking, so a
-// teacher cannot bind an activity to a grouping via Moodle's content picker.
-// Instead, the context-mapping launch signs the launch identity into a short-
-// lived "bind token" and hands it to the app SPA. The authenticated app then
-// posts it back to its own bind endpoint, which verifies the signature (so the
-// platform tuple + resourceLinkId can be trusted) and persists the binding.
-// The token only needs to outlive the teacher's in-session grouping pick.
+// Minted/verified in `bindToken.ts`; re-exported here so the public API surface
+// (verifyBindToken / LtiBindTokenClaims) is unchanged. The host app calls
+// verifyBindToken from its bind endpoint with the same bindTokenSecret.
 
-const BIND_TOKEN_TTL_SECONDS = 30 * 60;
-
-export interface LtiBindTokenClaims {
-  issuer: string;
-  clientId: string;
-  deploymentId: string;
-  contextId: string;
-  resourceLinkId: string;
-  courseId: string;
-}
-
-function mintBindToken(secret: string, claims: LtiBindTokenClaims): string {
-  return jwt.sign(claims, secret, { expiresIn: BIND_TOKEN_TTL_SECONDS });
-}
-
-/**
- * Verify a bind token minted by the context-mapping launch and return its
- * launch-identity claims. Throws (jsonwebtoken errors) if the token is invalid
- * or expired. The host app calls this from its bind endpoint with the same
- * `bindTokenSecret` passed to `initLti`.
- */
-export function verifyBindToken(secret: string, token: string): LtiBindTokenClaims {
-  const decoded = jwt.verify(token, secret) as jwt.JwtPayload & Partial<LtiBindTokenClaims>;
-  if (
-    !decoded ||
-    !decoded.issuer ||
-    !decoded.clientId ||
-    !decoded.deploymentId ||
-    !decoded.contextId ||
-    typeof decoded.resourceLinkId !== 'string' ||
-    !decoded.courseId
-  ) {
-    throw new Error('Invalid bind token payload');
-  }
-  return {
-    issuer: decoded.issuer,
-    clientId: decoded.clientId,
-    deploymentId: decoded.deploymentId,
-    contextId: decoded.contextId,
-    resourceLinkId: decoded.resourceLinkId,
-    courseId: decoded.courseId,
-  };
-}
+export { verifyBindToken } from './bindToken';
+export type { LtiBindTokenClaims } from './bindToken';
 
 /**
  * JSON.stringify that tolerates circular references (ltijs tokens can hold
@@ -290,117 +225,8 @@ function buildLtiContextSnapshot(res: express.Response): LtiContextSnapshot {
   };
 }
 
-/**
- * Resolve the platform course for a launch context, creating one if needed:
- *  1. existing course map for this platform tuple,
- *  2. else auto-map by fuzzy LMS identifiers (and attach the teacher),
- *  3. else provision a course stub from the LMS context claims.
- *
- * Persists the `contextId -> course` map and returns the resolved course id, or
- * `null` if nothing could be matched or provisioned. Shared by the
- * context-mapping launch flow and the deep-link selection screen.
- */
-async function resolveOrProvisionCourseForContext(
-  adapter: LtiAdapter,
-  res: express.Response,
-  teacher: LtiUser,
-  params: {
-    issuer: string;
-    clientId: string;
-    deploymentId: string;
-    contextId: string;
-    autoMapCourse: boolean;
-  }
-): Promise<{ courseId: string; created: boolean } | null> {
-  const platform = {
-    issuer: params.issuer,
-    clientId: params.clientId,
-    deploymentId: params.deploymentId,
-    contextId: params.contextId,
-  };
-  const isAdminUser = teacher.roles?.includes('admin');
-
-  let map = await adapter.findCourseMap(platform);
-
-  if (!map && params.autoMapCourse) {
-    const candidates = guessLmsCourseIdentifiers(res);
-    for (const candidate of candidates) {
-      const found =
-        (await adapter.findCourseByCourseIdForTeacher(teacher, candidate)) ||
-        (await adapter.findCourseByCourseId(candidate));
-      if (found) {
-        if (!isAdminUser) {
-          try {
-            await adapter.ensureTeacherInCourse(found, teacher);
-          } catch (e: any) {
-            logWarn('[LTI] Failed to auto-attach teacher to course (continuing)', {
-              userId: teacher.id,
-              courseId: found.id,
-              message: e?.message,
-            });
-          }
-        }
-        const courseTenant = found.tenantId || adapter.resolveEffectiveTenant();
-        await adapter.upsertCourseMap({
-          ...platform,
-          courseId: found.id,
-          createdBy: teacher.id,
-          ...(courseTenant ? { tenantId: courseTenant } : {}),
-        });
-        break;
-      }
-    }
-    map = await adapter.findCourseMap(platform);
-    if (!map) {
-      logWarn(
-        `[LTI] Course auto-map: no course matched LMS identifiers (contextId=${params.contextId}, candidates=${JSON.stringify(
-          candidates.slice(0, 12)
-        )})`
-      );
-    }
-  }
-
-  let created = false;
-  if (!map && adapter.provisionCourseFromLtiContext) {
-    const provisioned = await adapter.provisionCourseFromLtiContext({
-      teacher,
-      platform,
-      context: buildLtiContextSnapshot(res),
-    });
-    if (provisioned) {
-      const courseTenant = provisioned.tenantId || adapter.resolveEffectiveTenant();
-      await adapter.upsertCourseMap({
-        ...platform,
-        courseId: provisioned.id,
-        createdBy: teacher.id,
-        ...(courseTenant ? { tenantId: courseTenant } : {}),
-      });
-      map = await adapter.findCourseMap(platform);
-      created = true;
-      logInfo('[LTI] Course provisioned from LMS context', {
-        courseId: provisioned.id,
-        contextId: params.contextId,
-      });
-    }
-  }
-
-  if (!map) return null;
-
-  if (!isAdminUser) {
-    try {
-      const mappedCourse = await adapter.getCourseById(map.courseId);
-      if (mappedCourse) await adapter.ensureTeacherInCourse(mappedCourse, teacher);
-    } catch (e: any) {
-      logWarn('[LTI] Failed to auto-attach teacher to mapped course (continuing)', {
-        userId: teacher.id,
-        courseId: map.courseId,
-        message: e?.message,
-      });
-    }
-  }
-
-  return { courseId: map.courseId, created };
-}
+// `resolveOrProvisionCourseForContext` now lives in launchHandler.ts (shared by
+// the 1.3 and 1.1 context-mapping flows) and is imported above.
 
 // ─── initLti ─────────────────────────────────────────────────────────────────
 
@@ -492,6 +318,71 @@ export async function initLti(
   const prefix = adapter.customFieldPrefix;
   const launchRedirectPath = (opts.loginOnlyLaunchPath ?? '/lti/launch').trim() || '/lti/launch';
 
+  // ── LTI 1.0a / 1.1 (legacy) + grade-link wiring ────────────────────────
+
+  const legacyEnabled = opts.legacyLti ?? truthy(process.env.LTI_LEGACY_ENABLED);
+  const legacyMountPath =
+    (
+      opts.legacyMountPath ||
+      String(process.env.LTI_LEGACY_MOUNT ?? '').trim() ||
+      DEFAULT_LEGACY_MOUNT_SUBPATH
+    ).trim();
+  const legacyTimestampWindowSeconds =
+    opts.legacyTimestampWindowSeconds ??
+    (Number(process.env.LTI_LEGACY_TIMESTAMP_WINDOW_S) || DEFAULT_LEGACY_TIMESTAMP_WINDOW_S);
+  const legacyNonceTtlMs =
+    opts.legacyNonceTtlMs ??
+    (Number(process.env.LTI_LEGACY_NONCE_TTL_MS) || DEFAULT_LEGACY_NONCE_TTL_MS);
+  const legacyDeepLinking = opts.legacyDeepLinking ?? truthy(process.env.LTI_LEGACY_DEEP_LINKING);
+  const launchTicketSecret =
+    opts.launchTicketSecret ||
+    String(process.env.LTI_LAUNCH_TICKET_SECRET ?? '').trim() ||
+    opts.bindTokenSecret ||
+    '';
+  const agsPrototype = opts.agsPrototype ?? truthy(process.env.LTI_AGS_PROTOTYPE);
+
+  // Grade-link store (1.1 outcomes + 1.3 AGS). Defaults to in-memory.
+  const gradeLinkStore: LtiGradeLinkStore = opts.gradeLinkStore ?? createInMemoryGradeLinkStore();
+
+  // Capture the AGS endpoint claim from a 1.3 launch token (prototype only).
+  const captureAgsGradeLink = async (token: any, res: express.Response): Promise<void> => {
+    if (!agsPrototype) return;
+    try {
+      const endpoint =
+        token?.platformContext?.endpoint ??
+        token?.['https://purl.imsglobal.org/spec/lti-ags/claim/endpoint'];
+      if (!endpoint) return;
+      const externalId =
+        getExternalIdFromLti(res) || safeStr(token?.user) || safeStr(token?.userInfo?.sub);
+      if (!externalId) return;
+      await gradeLinkStore.saveGradeLink({
+        issuer: getIssuerFromLtiToken(token),
+        clientId: getClientIdFromLtiToken(token),
+        deploymentId: getDeploymentIdFromLtiToken(token),
+        contextId: getContextId(res),
+        resourceLinkId: getResourceLinkId(res),
+        userExternalId: externalId,
+        link: {
+          protocol: '1.3',
+          lineItem: safeStr(endpoint.lineitem) || undefined,
+          lineItems: safeStr(endpoint.lineitems) || undefined,
+          scopes: Array.isArray(endpoint.scope) ? endpoint.scope : undefined,
+        },
+      });
+    } catch (e: any) {
+      logWarn('[LTI] failed to capture AGS grade link (continuing)', { message: e?.message });
+    }
+  };
+
+  // Wire the host-callable sendScore() facade (1.1 outcomes / 1.3 AGS).
+  registerSendScore({
+    adapter,
+    consumerStore: opts.consumerStore,
+    gradeLinkStore,
+    agsPrototype,
+    getProvider: () => lti,
+  });
+
   // ── ltijs setup ──────────────────────────────────────────────────────
 
   const dbConfig = opts.dbPlugin ? { plugin: opts.dbPlugin } : { url: dbUrl };
@@ -517,194 +408,50 @@ export async function initLti(
       const ltiRole = inferRoleFromLti(res);
       const frontend = getFrontendBaseUrl(req, opts.frontendBaseUrl);
 
-      // Login-only mode: skip every resource / binding lookup and bounce the
-      // user straight to the SPA bridge. The frontend then calls /session to
-      // swap the ltik for an app JWT (the only LTI claim consumed in this
-      // mode is the user identity).
-      if (isLoginOnly) {
-        const qs = new URLSearchParams();
-        qs.set('lti', '1');
-        const target = `${frontend}${launchRedirectPath}?${qs.toString()}`;
-        logInfo('[LTI] onConnect — login-only redirect', {
+      // Capture the AGS grade link for this 1.3 launch (experimental prototype,
+      // off unless agsPrototype is enabled). Done for every launch mode so a
+      // later sendScore() can find the endpoint regardless of how the student
+      // entered.
+      await captureAgsGradeLink(token, res);
+
+      // Login-only and context-mapping launches are handled by the shared,
+      // protocol-agnostic normalized launch handler (also used by the 1.1
+      // legacy path). Build a NormalizedLaunch from the ltijs token and
+      // delegate. Deep-linking-mode launches fall through to the binding
+      // resolution below.
+      if (isLoginOnly || isContextMapping) {
+        const launch: NormalizedLaunch = {
+          version: '1.3',
           email,
+          name: getNameFromLtiToken(token) || email,
           role: ltiRole,
-          target,
-        });
-        return lti.redirect(res, target, { newResource: true });
-      }
-
-      // Context-mapping mode (plain external-tool launch, no Deep Linking).
-      // The Moodle course context maps to a platform course: a teacher launch
-      // matches/provisions the course; a student launch resolves it from the
-      // course map. Both land in the app — the teacher to manage groupings, the
-      // student to pick a grouping then a group.
-      if (isContextMapping) {
-        const issuer = getIssuerFromLtiToken(token);
-        const clientId = getClientIdFromLtiToken(token);
-        const deploymentId = getDeploymentIdFromLtiToken(token);
-        const contextId = getContextId(res);
-        const resourceLinkId = getResourceLinkId(res);
-        const name = getNameFromLtiToken(token) || email;
-        const externalId = getExternalIdFromLti(res);
-
-        logInfo('[LTI] onConnect — context-mapping launch', {
-          email,
-          role: ltiRole,
-          issuer,
-          clientId,
-          deploymentId,
-          contextId,
-          resourceLinkId,
-        });
-
-        // A binding ties THIS Moodle activity (resourceLinkId) to one grouping.
-        // It is the per-link target on top of the course-level context map.
-        const findBinding = () =>
-          issuer && clientId && deploymentId && contextId && resourceLinkId
-            ? fullAdapter.findResourceBinding({
-                issuer,
-                clientId,
-                deploymentId,
-                contextId,
-                resourceLinkId,
-              })
-            : Promise.resolve(null);
-
-        const mintTokenFor = (courseId: string): string | null => {
-          if (!opts.bindTokenSecret) return null;
-          if (!resourceLinkId) return null;
-          return mintBindToken(opts.bindTokenSecret, {
-            issuer,
-            clientId,
-            deploymentId,
-            contextId,
-            resourceLinkId,
-            courseId,
-          });
+          externalId: getExternalIdFromLti(res) || undefined,
+          platform: {
+            issuer: getIssuerFromLtiToken(token),
+            clientId: getClientIdFromLtiToken(token),
+            deploymentId: getDeploymentIdFromLtiToken(token),
+            contextId: getContextId(res),
+          },
+          resourceLinkId: getResourceLinkId(res),
+          custom: getCustom(res) as Record<string, string>,
+          contextSnapshot: buildLtiContextSnapshot(res),
         };
 
-        const landOnCourse = (courseId: string, bindToken?: string | null) => {
-          const qs = new URLSearchParams();
-          qs.set('courseId', courseId);
-          qs.set('lti', '1');
-          if (bindToken) qs.set('bindToken', bindToken);
-          return lti.redirect(res, `${frontend}${launchRedirectPath}?${qs.toString()}`, {
-            newResource: true,
-          });
-        };
-
-        const landOnGrouping = (
-          courseId: string,
-          groupingId: string,
-          bindToken?: string | null
-        ) => {
-          const qs = new URLSearchParams();
-          qs.set('courseId', courseId);
-          qs.set('groupingId', groupingId);
-          qs.set('lti', '1');
-          if (bindToken) qs.set('bindToken', bindToken);
-          return lti.redirect(res, `${frontend}${launchRedirectPath}?${qs.toString()}`, {
-            newResource: true,
-          });
-        };
-
-        if (ltiRole === 'teacher') {
-          const teacher = await fullAdapter.resolveOrProvisionTeacher(
-            email,
-            name,
-            ltiRole,
-            externalId
-          );
-          if (!teacher) {
-            logWarn('[LTI] onConnect — context-mapping teacher not resolved', { email });
-            return res
-              .status(200)
-              .send(
-                '<div style="font-family:system-ui;padding:24px;">Not authorized. Your LMS role must be Instructor and you need a teacher account.</div>'
-              );
-          }
-          const resolved = await resolveOrProvisionCourseForContext(fullAdapter, res, teacher, {
-            issuer,
-            clientId,
-            deploymentId,
-            contextId,
-            autoMapCourse,
-          });
-          if (!resolved) {
-            logWarn('[LTI] onConnect — context-mapping could not resolve a course', {
-              email,
-              contextId,
+        const launchCtx: NormalizedLaunchContext = {
+          mode: isLoginOnly ? 'login-only' : 'context-mapping',
+          autoMapCourse,
+          bindTokenSecret: opts.bindTokenSecret,
+          redirectToLaunch: (params) => {
+            const qs = new URLSearchParams(params);
+            qs.set('lti', '1');
+            return lti.redirect(res, `${frontend}${launchRedirectPath}?${qs.toString()}`, {
+              newResource: true,
             });
-            return res
-              .status(200)
-              .send(
-                '<div style="font-family:system-ui;padding:24px;">Could not match or create a course for this Moodle course. Please create the course in the app first.</div>'
-              );
-          }
+          },
+          respondHtml: (html) => res.status(200).send(html),
+        };
 
-          // A bind token always rides along on a teacher launch so the teacher
-          // can bind an unbound link OR re-point an already-bound one in-app.
-          const bindToken = mintTokenFor(resolved.courseId);
-          const binding = await findBinding();
-
-          if (binding?.resourceId) {
-            logInfo('[LTI] onConnect — context-mapping teacher redirect to bound grouping', {
-              email,
-              courseId: resolved.courseId,
-              groupingId: binding.resourceId,
-            });
-            return landOnGrouping(resolved.courseId, binding.resourceId, bindToken);
-          }
-
-          logInfo('[LTI] onConnect — context-mapping teacher redirect (link unbound, bind prompt)', {
-            email,
-            courseId: resolved.courseId,
-            created: resolved.created,
-            hasBindToken: !!bindToken,
-          });
-          return landOnCourse(resolved.courseId, bindToken);
-        }
-
-        // Student launch: resolve the course from the map the teacher created.
-        const mapped =
-          issuer && clientId && deploymentId && contextId
-            ? await fullAdapter.findCourseMap({ issuer, clientId, deploymentId, contextId })
-            : null;
-        if (!mapped) {
-          logWarn('[LTI] onConnect — context-mapping student launch with no course map', {
-            email,
-            contextId,
-          });
-          return res
-            .status(200)
-            .send(
-              '<div style="font-family:system-ui;padding:24px;">This activity is not set up yet. Ask your teacher to open it once first.</div>'
-            );
-        }
-
-        const binding = await findBinding();
-        if (binding?.resourceId) {
-          logInfo('[LTI] onConnect — context-mapping student redirect to bound grouping', {
-            email,
-            courseId: mapped.courseId,
-            groupingId: binding.resourceId,
-          });
-          return landOnGrouping(mapped.courseId, binding.resourceId);
-        }
-
-        // The course is mapped but this specific activity has not been linked to
-        // a grouping yet. Students get a dead-end page (no grouping picker) and
-        // are told to contact their teacher, who binds the link on their launch.
-        logWarn('[LTI] onConnect — context-mapping student launch, link not bound to a grouping', {
-          email,
-          courseId: mapped.courseId,
-          resourceLinkId,
-        });
-        return res
-          .status(200)
-          .send(
-            '<div style="font-family:system-ui;padding:24px;">This activity has not been linked to a group sign-up yet. Please contact your teacher to set it up.</div>'
-          );
+        return handleNormalizedLaunch(fullAdapter, launch, launchCtx);
       }
 
       const custom = getCustom(res);
@@ -1157,13 +904,18 @@ export async function initLti(
 
     // Match or provision the platform course for this Moodle context (shared
     // with the context-mapping launch flow), persisting the course map.
-    const resolved = await resolveOrProvisionCourseForContext(adapter, res, teacher, {
-      issuer,
-      clientId,
-      deploymentId,
-      contextId,
-      autoMapCourse,
-    });
+    const resolved = await resolveOrProvisionCourseForContext(
+      adapter,
+      buildLtiContextSnapshot(res),
+      teacher,
+      {
+        issuer,
+        clientId,
+        deploymentId,
+        contextId,
+        autoMapCourse,
+      }
+    );
     const finalMap = resolved ? { courseId: resolved.courseId } : null;
     const lmsContext = buildLtiContextSnapshot(res);
     const provisionMeta: DeepLinkSelectionData['provision'] = resolved?.created
@@ -2134,6 +1886,50 @@ export async function initLti(
     }
   );
 
+  // ── LTI 1.0a / 1.1 (legacy) router ─────────────────────────────────────
+  // Mounted on the host app (not lti.app) BEFORE the main mount so its more
+  // specific prefix wins over the ltijs catch-all. Requires a consumerStore and
+  // a signing secret; otherwise it stays disabled with a warning.
+  let legacyMounted = false;
+  if (legacyEnabled) {
+    if (!opts.consumerStore) {
+      logWarn('[LTI] legacyLti enabled but no consumerStore supplied; 1.0a/1.1 path disabled');
+    } else if (!launchTicketSecret) {
+      logWarn(
+        '[LTI] legacyLti enabled but no launchTicketSecret/bindTokenSecret; 1.0a/1.1 path disabled'
+      );
+    } else {
+      const nonceStore = opts.nonceStore ?? createInMemoryNonceStore(legacyNonceTtlMs);
+      const lti11Router = createLti11Router({
+        adapter,
+        consumerStore: opts.consumerStore,
+        nonceStore,
+        gradeLinkStore,
+        connectMode,
+        mountPath,
+        legacyMountPath,
+        launchRedirectPath,
+        autoMapCourse,
+        autoEnrollStudents,
+        bindTokenSecret: opts.bindTokenSecret,
+        launchTicketSecret,
+        timestampWindowSeconds: legacyTimestampWindowSeconds,
+        legacyDeepLinking,
+        toolBaseUrl: opts.toolBaseUrl,
+        frontendBaseUrl: opts.frontendBaseUrl,
+        customFieldPrefix: prefix,
+        deepLinkPageTitle: fullAdapter.deepLinkPageTitle ?? 'Configure Activity',
+        resourceLabel: fullAdapter.resourceLabel ?? 'Resource',
+      });
+      app.use(`${mountPath}${legacyMountPath}`, lti11Router);
+      legacyMounted = true;
+      logInfo('[LTI] Legacy 1.0a/1.1 path enabled', {
+        mount: `${mountPath}${legacyMountPath}`,
+        legacyDeepLinking,
+      });
+    }
+  }
+
   app.use(mountPath, lti.app);
 
   logInfo('[LTI] Enabled', {
@@ -2150,6 +1946,8 @@ export async function initLti(
     loginOnlyLaunchPath: skipDeepLinking ? launchRedirectPath : '(deep-linking enabled)',
     autoMapCourse: skipDeepLinking ? '(n/a)' : autoMapCourse,
     autoEnrollStudents: skipDeepLinking ? '(n/a)' : autoEnrollStudents,
+    legacyLti: legacyMounted ? `${mountPath}${legacyMountPath}` : 'disabled',
+    agsPrototype,
     dbBackend: opts.dbPlugin ? 'plugin' : 'mongo-url',
   });
 }

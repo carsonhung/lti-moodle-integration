@@ -202,6 +202,25 @@ export function inferRoleFromLti(res: express.Response): LtiRole {
 }
 
 /**
+ * Infer the role from an LTI 1.0a/1.1 `roles` launch parameter (a comma-
+ * separated list of LIS role URNs/short names). Mirrors {@link inferRoleFromLti}
+ * but works off a plain string rather than the ltijs token on `res`.
+ */
+export function inferRoleFromLegacyRoles(rolesParam: string): LtiRole {
+  const joined = String(rolesParam ?? '').toLowerCase();
+  if (
+    joined.includes('instructor') ||
+    joined.includes('teachingassistant') ||
+    joined.includes('contentdeveloper') ||
+    joined.includes('manager') ||
+    joined.includes('administrator')
+  ) {
+    return 'teacher';
+  }
+  return 'student';
+}
+
+/**
  * Extract a numeric "external ID" (e.g. HKU UID, student number) from the LIS
  * person_sourcedid claim. Returns '' when the claim is absent or non-numeric.
  * Adapters can use this to link LTI users to existing accounts by their
@@ -291,6 +310,17 @@ function expandCourseIdentifierCandidates(values: string[]): string[] {
     out.push(...deriveIdentifierVariants(v));
   }
   return uniqStrings(out);
+}
+
+/**
+ * Public, transport-agnostic course-identifier expansion. Given a set of raw
+ * candidate strings (context id, course codes, sourcedids, labels), returns the
+ * de-duplicated, expanded candidate list used for fuzzy course matching. Used
+ * by both the 1.3 (token-derived) and 1.1 (form-param-derived) paths.
+ */
+export function expandLmsCourseIdentifiers(values: Array<string | undefined | null>): string[] {
+  const base = uniqStrings(values).filter((s) => s.length <= 128);
+  return expandCourseIdentifierCandidates(base);
 }
 
 /**

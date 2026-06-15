@@ -26,7 +26,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 
-import { getLtiSession } from '../api';
+import { getLtiSession, getLtiSessionByTicket } from '../api';
 
 const LOGIN_HREF = '/login';
 
@@ -108,6 +108,7 @@ export function LtiLaunch() {
     (async () => {
       try {
         const ltik = (searchParams.get('ltik') ?? '').trim();
+        const ticket = (searchParams.get('ticket') ?? '').trim();
         const agentId = (searchParams.get('agentId') ?? '').trim();
         const categoryId = (searchParams.get('categoryId') ?? '').trim();
         const courseId = (searchParams.get('courseId') ?? '').trim();
@@ -116,11 +117,13 @@ export function LtiLaunch() {
         const lock = (searchParams.get('lock') ?? '').trim();
         const returnTo = (searchParams.get('returnTo') ?? '').trim();
 
-        if (!ltik) {
-          throw new Error('Missing ltik (LTI context token).');
+        if (!ltik && !ticket) {
+          throw new Error('Missing ltik / ticket (LTI context token).');
         }
 
-        const session = await getLtiSession(ltik);
+        // LTI 1.1 launches carry a `ticket` (no ltijs ltik); 1.3 launches carry
+        // an `ltik`. Exchange whichever is present for an app JWT.
+        const session = ticket ? await getLtiSessionByTicket(ticket) : await getLtiSession(ltik);
         await persistToken(String(session.token), Number(session.expiresIn), session.tenant);
 
         setStatus('Loading your profile…');

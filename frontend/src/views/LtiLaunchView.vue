@@ -35,7 +35,7 @@
 import { onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
-import { getLtiSession } from '../api';
+import { getLtiSession, getLtiSessionByTicket } from '../api';
 
 const route = useRoute();
 const router = useRouter();
@@ -93,6 +93,7 @@ function targetRouteFor(opts: {
 onMounted(async () => {
   try {
     const ltik = String(route.query.ltik ?? '').trim();
+    const ticket = String(route.query.ticket ?? '').trim();
     const agentId = String(route.query.agentId ?? '').trim();
     const categoryId = String(route.query.categoryId ?? '').trim();
     const courseId = String(route.query.courseId ?? '').trim();
@@ -101,11 +102,13 @@ onMounted(async () => {
     const lock = String(route.query.lock ?? '').trim();
     const returnTo = String(route.query.returnTo ?? '').trim();
 
-    if (!ltik) {
-      throw new Error('Missing ltik (LTI context token).');
+    if (!ltik && !ticket) {
+      throw new Error('Missing ltik / ticket (LTI context token).');
     }
 
-    const session = await getLtiSession(ltik);
+    // LTI 1.1 launches carry a `ticket` (no ltijs ltik); 1.3 launches carry an
+    // `ltik`. Exchange whichever is present for an app JWT.
+    const session = ticket ? await getLtiSessionByTicket(ticket) : await getLtiSession(ltik);
     await persistToken(String(session.token), Number(session.expiresIn), session.tenant);
 
     status.value = 'Loading your profile…';

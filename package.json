@@ -59,6 +59,8 @@
   "scripts": {
     "build": "tsc -p backend/tsconfig.json",
     "clean": "node -e \"require('fs').rmSync('backend/dist',{recursive:true,force:true})\"",
+    "test": "node --test \"backend/test/**/*.test.mjs\"",
+    "pretest": "npm run build",
     "prepare": "npm run clean && npm run build"
   },
   "engines": {

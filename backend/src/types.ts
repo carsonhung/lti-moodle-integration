@@ -106,6 +106,148 @@ export interface LtiContextSnapshot {
   identifierCandidates: string[];
 }
 
+// ─── Normalized Launch (protocol-agnostic) ───────────────────────────────────
+
+/**
+ * The LTI version a launch arrived on. `1.0a` and `1.1` share the OAuth 1.0a
+ * legacy path; `1.3` is the OIDC/JWT path handled by ltijs.
+ */
+export type LtiLaunchVersion = '1.3' | '1.1' | '1.0a';
+
+/**
+ * A protocol-agnostic view of an LTI launch. Both the 1.3 `onConnect` handler
+ * and the legacy 1.0a/1.1 router build one of these and hand it to
+ * `handleNormalizedLaunch`, so the launch/SSO + course-mapping logic lives in
+ * one place regardless of the wire format.
+ */
+export interface NormalizedLaunch {
+  version: LtiLaunchVersion;
+  email: string;
+  name: string;
+  role: LtiRole;
+  externalId?: string;
+  /** Platform tuple used to key course maps and resource bindings. */
+  platform: LtiPlatformContext;
+  resourceLinkId: string;
+  /** Custom launch params (LTI custom claim / legacy `custom_*` params). */
+  custom: Record<string, string>;
+  /** LMS course-context snapshot for auto-mapping / provisioning. */
+  contextSnapshot: LtiContextSnapshot;
+}
+
+// ─── Grade links (shared by 1.1 Basic Outcomes and 1.3 AGS) ──────────────────
+
+/** A captured LTI 1.1 Basic Outcomes service link for a user + activity. */
+export interface LtiOutcomeGradeLink {
+  protocol: '1.1';
+  /** `lis_outcome_service_url` — where `replaceResult` POX is POSTed. */
+  serviceUrl: string;
+  /** `lis_result_sourcedid` — opaque per-user-per-activity result handle. */
+  sourcedId: string;
+  /** The `oauth_consumer_key` the launch was signed with (to resolve secret). */
+  consumerKey: string;
+}
+
+/** A captured LTI 1.3 AGS endpoint claim for a user + activity. */
+export interface LtiAgsGradeLink {
+  protocol: '1.3';
+  /** AGS `lineitems` collection URL (the container endpoint). */
+  lineItems?: string;
+  /** AGS `lineitem` URL when the platform bound a single line item. */
+  lineItem?: string;
+  /** Granted AGS scopes. */
+  scopes?: string[];
+}
+
+export type LtiGradeLink = LtiOutcomeGradeLink | LtiAgsGradeLink;
+
+/**
+ * Persists the grade link captured at launch (1.1 outcome service or 1.3 AGS
+ * endpoint), keyed by platform tuple + user, so the host can later push a score
+ * via `sendScore()` without the launch still being in flight. The core ships an
+ * in-memory default; a durable deployment supplies a DB-backed implementation
+ * (see `LtiGradeLinkModel.mongoose.ts`).
+ */
+export interface LtiGradeLinkStore {
+  saveGradeLink(
+    params: LtiPlatformContext & {
+      resourceLinkId: string;
+      userExternalId: string;
+      link: LtiGradeLink;
+    }
+  ): Promise<void>;
+
+  findGradeLink(
+    params: LtiPlatformContext & {
+      resourceLinkId: string;
+      userExternalId: string;
+    }
+  ): Promise<LtiGradeLink | null>;
+}
+
+// ─── LTI 1.0a / 1.1 credential + replay stores ───────────────────────────────
+
+/** A resolved OAuth 1.0a consumer credential (shared key/secret pair). */
+export interface LtiConsumer {
+  key: string;
+  secret: string;
+  tenantId?: string;
+}
+
+/**
+ * Resolves the shared secret for an OAuth 1.0a `oauth_consumer_key`. The core
+ * never stores secrets itself; supply a store backed by your DB (see
+ * `consumerStore.mongoose.example.ts`). Return `null` for an unknown/disabled
+ * key so the launch is rejected.
+ */
+export interface LtiConsumerStore {
+  resolveConsumer(consumerKey: string, tenantId?: string): Promise<LtiConsumer | null>;
+}
+
+/** A consumer record as returned to admin UIs — the secret is NEVER included. */
+export interface LtiConsumerSummary {
+  id: string;
+  consumerKey: string;
+  label?: string;
+  enabled: boolean;
+  tenantId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * Admin CRUD over OAuth 1.0a consumer credentials, backed by your DB. The
+ * secret is write-only: it is accepted on create/update but never returned by
+ * `list`/`get`. Wire a router over this with `createLtiConsumerAdminRouter`.
+ */
+export interface LtiConsumerAdminStore {
+  list(tenantId?: string): Promise<LtiConsumerSummary[]>;
+  get(id: string): Promise<LtiConsumerSummary | null>;
+  create(params: {
+    consumerKey: string;
+    secret: string;
+    label?: string;
+    enabled?: boolean;
+    tenantId?: string;
+  }): Promise<LtiConsumerSummary>;
+  update(
+    id: string,
+    params: { secret?: string; label?: string; enabled?: boolean }
+  ): Promise<LtiConsumerSummary | null>;
+  remove(id: string): Promise<boolean>;
+}
+
+/**
+ * OAuth 1.0a nonce replay protection. `seen(nonce, timestamp)` returns `true`
+ * if the nonce has already been used within the retention window (i.e. this is
+ * a replay and the launch must be rejected); otherwise it records the nonce and
+ * returns `false`. The core ships an in-memory TTL default; a distributed
+ * deployment supplies a shared (e.g. Redis-backed) implementation.
+ */
+export interface LtiNonceStore {
+  seen(nonce: string, timestampSeconds: number): Promise<boolean>;
+}
+
 // ─── Deep Link Item Types ────────────────────────────────────────────────────
 
 export interface LtiLineItem {
@@ -485,4 +627,64 @@ export interface LtiInitOptions {
    * is unavailable).
    */
   bindTokenSecret?: string;
+
+  // ── LTI 1.0a / 1.1 (legacy) support ────────────────────────────────────
+
+  /**
+   * Enable the LTI 1.0a / 1.1 (OAuth 1.0a-signed) launch path alongside the
+   * 1.3 path. When `true`, the core mounts the legacy router under
+   * `${mountPath}${legacyMountPath}` and a `consumerStore` is required. Falls
+   * back to the env var `LTI_LEGACY_ENABLED`. Defaults to `false` so existing
+   * 1.3-only deployments are unaffected.
+   */
+  legacyLti?: boolean;
+  /**
+   * Subpath (under `mountPath`) for the legacy 1.0a/1.1 router. The launch URL
+   * given to the old LMS is `${toolBaseUrl}${mountPath}${legacyMountPath}/launch`.
+   * Defaults to `/legacy` (env: `LTI_LEGACY_MOUNT`).
+   */
+  legacyMountPath?: string;
+  /**
+   * Resolves the shared secret for an OAuth 1.0a `oauth_consumer_key`. Required
+   * when `legacyLti` is enabled — without it the legacy path cannot verify
+   * signatures and stays disabled.
+   */
+  consumerStore?: LtiConsumerStore;
+  /**
+   * OAuth 1.0a nonce replay store. Defaults to the shipped in-memory TTL store
+   * (fine for a single process; supply a shared store for multi-instance
+   * deployments).
+   */
+  nonceStore?: LtiNonceStore;
+  /**
+   * Stores the grade link (1.1 outcome service or 1.3 AGS endpoint) captured at
+   * launch so the host can later call `sendScore()`. Defaults to an in-memory
+   * store. Supply a durable implementation to survive restarts.
+   */
+  gradeLinkStore?: LtiGradeLinkStore;
+  /** OAuth 1.0a timestamp acceptance window, in seconds (env: `LTI_LEGACY_TIMESTAMP_WINDOW_S`). */
+  legacyTimestampWindowSeconds?: number;
+  /** In-memory nonce retention, in ms (env: `LTI_LEGACY_NONCE_TTL_MS`). */
+  legacyNonceTtlMs?: number;
+  /**
+   * Enable LTI 1.1 Content-Item deep linking (teacher picks content; the tool
+   * signs a return form back to the LMS). Only meaningful when `legacyLti` is
+   * on. Defaults to `false`.
+   */
+  legacyDeepLinking?: boolean;
+  /**
+   * Secret used to sign the short-lived launch ticket minted after a valid 1.1
+   * launch and exchanged by the SPA at the legacy `/session` endpoint. Defaults
+   * to `bindTokenSecret` (env: `LTI_LAUNCH_TICKET_SECRET`).
+   */
+  launchTicketSecret?: string;
+
+  // ── LTI 1.3 AGS prototype (experimental) ───────────────────────────────
+
+  /**
+   * Enable the experimental LTI 1.3 Assignment & Grade Services score-passback
+   * prototype, built on ltijs's Grade service. Off by default; the 1.3 path's
+   * behaviour is unchanged unless opted in (env: `LTI_AGS_PROTOTYPE`).
+   */
+  agsPrototype?: boolean;
 }

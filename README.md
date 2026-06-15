@@ -9,6 +9,8 @@ Extracted from the [TALIC Chatbot project](../) and made framework-agnostic so i
 ## Features
 
 - **OIDC Login & Launch** — Receives Moodle's LTI launch, validates the JWT, and redirects users into your app.
+- **LTI 1.0a / 1.1 support** *(new, optional)* — Be launched from older LMSs that speak LTI 1.0a / 1.1 (OAuth 1.0a-signed form POST, no OIDC/JWT) alongside the 1.3 path, with **Content-Item deep linking** and **Basic Outcomes** grade passback. Off by default — see [LTI 1.0a / 1.1 support](#lti-10a--11-support-legacy-lms).
+- **Grade passback** *(new, optional)* — A unified `sendScore()` facade pushes scores back to the LMS via LTI 1.1 Basic Outcomes or an experimental LTI 1.3 AGS prototype.
 - **Login-only mode** *(new)* — Set `skipDeepLinking: true` to use LTI purely as an SSO replacement. The core skips registering every deep-link / teacher-management / category route, and you ship an `LtiLoginOnlyAdapter` (3 methods) instead of the full `LtiAdapter` (~25 methods). See `adapters/login-only.example.ts`.
 - **Deep Linking** — Teachers pick a course + resource (or category) in a clean UI (Vue or React component provided); the selection is persisted as a binding for that LMS activity.
 - **Session Bridge** — Exchanges the LTI launch token (`ltik`) for your app's JWT so the SPA can authenticate.
@@ -440,6 +442,116 @@ A complete reference adapter ships at `backend/src/adapters/login-only.example.t
 You should also configure Moodle's "External tool" registration with **Tool configuration usage = Launch only** (not "Show as a way to pick course content") so teachers never see the broken deep-link link.
 
 ---
+
+## LTI 1.0a / 1.1 support (legacy LMS)
+
+Some institutions still run LMSs (or LMS configurations) that only speak **LTI
+1.0a / 1.1** — an OAuth 1.0a HMAC-SHA1-signed HTML form POST with a shared
+*consumer key/secret*, with **no** OIDC login round-trip and **no** signed JWT.
+This module can accept those launches in parallel with the modern 1.3 path. It is
+**off by default**; the 1.3 behaviour is unchanged unless you opt in.
+
+### Enable it
+
+```ts
+import {
+  initLti,
+  createInMemoryNonceStore,        // single-instance default; swap for a shared store in prod
+} from 'lti-moodle-integration/backend';
+import { myConsumerStore } from './lti/consumerStore'; // resolves the shared secret by consumer key
+
+await initLti(app, adapter, {
+  mountPath: '/api/v1/lti',
+  legacyLti: true,                 // or LTI_LEGACY_ENABLED=true
+  consumerStore: myConsumerStore,  // REQUIRED — see below
+  launchTicketSecret: process.env.LTI_LAUNCH_TICKET_SECRET, // falls back to bindTokenSecret
+  legacyDeepLinking: true,         // optional — Content-Item picker (LTI_LEGACY_DEEP_LINKING)
+  // nonceStore, gradeLinkStore, legacyMountPath, legacyTimestampWindowSeconds all optional
+});
+```
+
+The legacy router mounts at `${mountPath}${legacyMountPath}` (default
+`/api/v1/lti/legacy`). Register this as the tool launch URL in the old LMS:
+
+| Field | Value |
+|---|---|
+| Launch URL | `https://yourserver.com/api/v1/lti/legacy/launch` |
+| Consumer key | the key you stored via the consumer admin |
+| Shared secret | the matching secret |
+
+### Consumer store (required)
+
+LTI 1.0a/1.1 has no key discovery — you must hold the shared secret. Implement the
+`LtiConsumerStore` interface (one method) so the verifier can look up the secret
+for an incoming `oauth_consumer_key`:
+
+```ts
+import type { LtiConsumerStore } from 'lti-moodle-integration/backend';
+
+export const myConsumerStore: LtiConsumerStore = {
+  async resolveConsumer(consumerKey, tenantId) {
+    const doc = await LtiConsumerModel.findOne({ consumerKey, enabled: true });
+    return doc ? { consumerKey: doc.consumerKey, secret: doc.secret, tenantId: doc.tenantId } : null;
+  },
+};
+```
+
+A reference `LtiConsumerModel` (Mongoose) and store example ship at
+`backend/src/models/LtiConsumerModel.mongoose.ts` and
+`backend/src/stores/consumerStore.mongoose.example.ts`. For an admin UI, mount the
+write-only-secret CRUD router:
+
+```ts
+import { createLtiConsumerAdminRouter } from 'lti-moodle-integration/backend';
+app.use('/api/v1/lti/consumers', createLtiConsumerAdminRouter({
+  adminMiddleware: [protect, authorize('admin')],
+  store: myConsumerAdminStore, // see stores/consumerAdminStore.mongoose.example.ts
+}));
+```
+
+### Session bridge (the 1.1 analogue of `ltik`)
+
+A 1.1 launch has no ltijs `ltik`. After a valid OAuth 1.0a launch the router mints
+a short-lived **signed launch ticket** and redirects the SPA to
+`/lti/launch?ticket=…`. The shipped `LtiLaunchView.vue` / `LtiLaunch.tsx` already
+detect `?ticket=` and exchange it at the legacy `/session` endpoint for your app
+JWT — same UX as the 1.3 flow. If your frontend uses a non-default legacy mount,
+set it once at startup: `configureLtiApi({ legacyBase: '/api/v1/lti/legacy' })`.
+
+### Grade passback
+
+The module records the LMS's grade target at launch time (the 1.1 Basic Outcomes
+service URL + `sourcedId`, or the 1.3 AGS endpoint) in an `LtiGradeLinkStore`
+(in-memory default via `createInMemoryGradeLinkStore`). Push a score with the
+unified facade — it dispatches to the right protocol automatically:
+
+```ts
+import { sendScore } from 'lti-moodle-integration/backend';
+
+await sendScore({
+  userExternalId: '...',   // the LMS user id captured at launch
+  contextId: '...',
+  resourceLinkId: '...',
+  score: 8,
+  maxScore: 10,
+});
+```
+
+- **LTI 1.1 Basic Outcomes** (`legacy/outcomes.ts`) — OAuth 1.0a-signed POX
+  `replaceResult` / `readResult` / `deleteResult` with `oauth_body_hash`.
+- **LTI 1.3 AGS** (`grades/ags.ts`, **experimental prototype**) — gated behind
+  `agsPrototype: true` / `LTI_AGS_PROTOTYPE`. Built on ltijs's Grade service; not
+  production-hardened.
+
+### Production notes
+
+- The default `nonceStore` / `gradeLinkStore` are **in-memory** (single instance
+  only). For multi-instance deployments supply durable, shared implementations
+  (reference Mongoose `LtiGradeLinkModel` + store example are provided).
+- Keep `legacyTimestampWindowSeconds` tight (default 300s) and ensure server
+  clocks are synced — OAuth 1.0a replay protection depends on it.
+- Shared secrets are long-lived bearer credentials; store them encrypted/at rest
+  and rotate via the consumer admin. The admin API never returns a secret.
 
 ## The Adapter Pattern
 
