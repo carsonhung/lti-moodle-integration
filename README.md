@@ -259,6 +259,48 @@ Then import the portable client directly: `import { configureLtiApi, getLtiSessi
 
 To move to the next project: copy this folder in unchanged, repeat steps 1–4. Nothing in this folder needs editing for portability — all the app-specific code lives in your `backend/`/`frontend/`.
 
+**Option C — Install as a package (`npm install`).** The folder is now packaged so you can depend on it like any other module instead of copying source. The backend ships compiled (`backend/dist` with `.d.ts`); the frontend components ship as source under the `./frontend/*` subpath export and are resolved by your own bundler.
+
+This package is **not** published to the public npm registry (it carries an HKU TELI internal-use `LICENSE` and `publishConfig.access: "restricted"`). Install it one of two ways:
+
+```bash
+# A) Directly from git (no registry needed) — pin a tag or commit:
+npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.0.0
+
+# B) From a private registry (GitHub Packages / Verdaccio / Artifactory),
+#    after `npm publish` from this folder:
+npm install lti-moodle-integration
+```
+
+> Installing from git runs the `prepare` script, which npm executes **after** installing the package's dev dependencies — so `tsc` is available and `backend/dist` is compiled automatically on the consumer's machine. The same `prepare` hook runs at `npm pack` / `npm publish` time for the registry path. (Pin a tag/commit with `#v1.0.0`; without it npm installs the default branch HEAD.)
+
+Then consume the published entry points instead of relative paths:
+
+```typescript
+// backend
+import { initLti, createLtiAdminRouter, setLtiLogger } from 'lti-moodle-integration/backend';
+import type { LtiAdapter } from 'lti-moodle-integration/backend';
+```
+
+```typescript
+// frontend (your bundler resolves the raw component source)
+import { configureLtiApi, getLtiSession } from 'lti-moodle-integration/frontend/src/api';
+// Vue:
+import LtiLaunchView from 'lti-moodle-integration/frontend/src/views/LtiLaunchView.vue';
+// React:
+import { LtiLaunch } from 'lti-moodle-integration/frontend/src/react/LtiLaunch';
+```
+
+You still implement your own adapter and thin views — the package gives you the portable core, types, admin router, and reference components; everything that touches your models/auth/routes stays in your app (steps 3–4 of Option B). The reference adapters and models (`backend/src/adapters/*.example.ts`, `backend/src/models/*`) ship as source for you to copy and adapt.
+
+Choose the consumption model by how much you expect to diverge from the module:
+
+| | A: Copy in | B: Reference in place | C: Install as a package |
+|---|---|---|---|
+| You edit the core | Yes (forked) | Yes (vibe-code in the folder) | No (consume releases) |
+| Upgrades | Manual re-copy | `git pull` the folder | `npm update` / bump version |
+| Best for | One-off forks | Active co-development | Many independent consumers |
+
 ---
 
 ## Using the React components
@@ -422,7 +464,10 @@ Method documentation is in `backend/src/types.ts`. See `backend/src/adapters/mon
 - [docs/MOODLE_SETUP.md](docs/MOODLE_SETUP.md) — step-by-step Moodle external tool configuration.
 - [docs/INTEGRATION_GUIDE.md](docs/INTEGRATION_GUIDE.md) — drop-in checklist for adding LTI to an existing project.
 - [docs/INTEGRATION_TEMPLATE.md](docs/INTEGRATION_TEMPLATE.md) — **copy/fill-in template** for every deployment shape: login-only SSO bridge, full activity with Deep Linking, and full activity without the Deep Linking picker. Decision-gated: it opens with a "confirm choices before writing code" checklist the implementing AI must ask the user first. Start here when scaffolding a new integration.
+- [docs/SAAS_ARCHITECTURE.md](docs/SAAS_ARCHITECTURE.md) — design for evolving the package into a hosted, multi-tenant LTI service (managed gateway and fully hosted product), with isolation, key management, and a phased roadmap.
 
 ## License
 
-Extracted from the TALIC Chatbot project. Reuse freely within HKU TELI projects.
+Licensed under the [Apache License 2.0](LICENSE), Copyright 2026 HKU TALIC — see
+[`NOTICE`](NOTICE) for attribution. Originally extracted from the TALIC Chatbot
+project (HKU TALIC) and made framework-agnostic for reuse.

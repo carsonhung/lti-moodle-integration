@@ -1,0 +1,8 @@
+lti-moodle-integration
+Copyright 2026 HKU TALIC
+
+Licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+This software was originally extracted from the TALIC Chatbot project
+developed at the University of Hong Kong (HKU TALIC / TELI), and made
+framework-agnostic for reuse.
