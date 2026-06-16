@@ -67,6 +67,7 @@ export type {
   LtiCourseMapping,
   LtiResourceBinding,
   LtiPlatformContext,
+  LtiContextSnapshot,
   LtiRole,
   LtiConnectMode,
   LtiBindingType,
