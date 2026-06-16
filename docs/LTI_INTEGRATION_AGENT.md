@@ -76,11 +76,11 @@ sequenceDiagram
     participant SPA as App SPA
     participant API as App bind API
     M->>Core: Teacher launch (resource_link_id, no binding)
-    Core->>Core: resolve course (context map); mint signed bindToken
+    Core->>Core: resolve course (context map), mint signed bindToken
     Core->>SPA: redirect with courseId + bindToken
     SPA->>SPA: show "link this activity to a target" banner
     SPA->>API: POST bind { bindToken, targetId }
-    API->>API: verify bindToken; authz teacher; upsert binding (resourceId = targetId)
+    API->>API: verify bindToken, authz teacher, upsert binding (resourceId = targetId)
     API->>SPA: { targetId }
     SPA->>SPA: navigate to the bound target
     Note over M,SPA: Later launches (any role) resolve the binding and go straight to the target

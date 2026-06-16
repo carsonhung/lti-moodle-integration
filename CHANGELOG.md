@@ -58,11 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LICENSE` (Apache-2.0) and `NOTICE` (attribution) files, Copyright 2026 HKU TALIC.
 - README "Option C — Install as a package" section covering private-registry and
   git installs.
-- `docs/SAAS_ARCHITECTURE.md` — design for evolving the package into a hosted
+- SaaS architecture design notes — for evolving the package into a hosted
   multi-tenant LTI gateway (Option 2a) and a fully hosted product (Option 2b).
+  Kept as internal-only notes outside the published package (see "Changed").
 
 ### Changed
 
+- Internal strategy notes (`PACKAGING_DISCUSSION.md`, `SAAS_ARCHITECTURE.md`) were
+  moved out of the package's `docs/` into the host monorepo's `docs/internal/`, so
+  they ship neither in the npm tarball nor in the standalone public repo. The
+  published `docs/` now contains only consumer-facing integration docs.
 - `core.ts` launch handling was refactored into a protocol-agnostic
   `handleNormalizedLaunch` (in `launchHandler.ts`) shared by the 1.3 and 1.1
   paths; logging and bind-token helpers were extracted to `logger.ts` /

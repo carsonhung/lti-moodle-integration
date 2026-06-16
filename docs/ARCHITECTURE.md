@@ -233,11 +233,11 @@ sequenceDiagram
     participant SPA as App SPA
     participant API as App bind endpoint
     M->>Core: Teacher launch (resource_link_id, no binding)
-    Core->>Core: resolve course (lti_course_maps); mint signed bindToken
+    Core->>Core: resolve course (lti_course_maps), mint signed bindToken
     Core->>SPA: redirect /lti/launch?courseId=…&bindToken=…
     SPA->>SPA: show "link this activity to a grouping" banner
     SPA->>API: POST /api/v1/lti/bindings { bindToken, groupingId | newGrouping }
-    API->>API: verifyBindToken; authz teacher/admin; upsertResourceBinding (resourceId = groupingId)
+    API->>API: verifyBindToken, authz teacher/admin, upsertResourceBinding (resourceId = groupingId)
     API->>SPA: { success, groupingId }
     SPA->>SPA: navigate to ?grouping=groupingId
     Note over M,SPA: Later launches (any role) resolve the binding and go straight to the grouping

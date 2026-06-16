@@ -63,7 +63,9 @@ lti-moodle-integration/
     ├── ARCHITECTURE.md             — module design + LTI 1.3 flow diagrams
     ├── MOODLE_SETUP.md             — step-by-step Moodle external tool config
     ├── INTEGRATION_GUIDE.md        — drop-in checklist for a new project
-    └── INTEGRATION_TEMPLATE.md     — copy/fill-in template for both modes (login-only SSO + full activity)
+    ├── INTEGRATION_TEMPLATE.md     — copy/fill-in template for both modes (login-only SSO + full activity)
+    ├── LTI_INTEGRATION_MANUAL.md   — end-to-end integration manual (flows + setup)
+    └── LTI_INTEGRATION_AGENT.md    — condensed agent-oriented integration brief
 ```
 
 ---
@@ -263,7 +265,7 @@ To move to the next project: copy this folder in unchanged, repeat steps 1–4. 
 
 **Option C — Install as a package (`npm install`).** The folder is now packaged so you can depend on it like any other module instead of copying source. The backend ships compiled (`backend/dist` with `.d.ts`); the frontend components ship as source under the `./frontend/*` subpath export and are resolved by your own bundler.
 
-This package is **not** published to the public npm registry (it carries an HKU TELI internal-use `LICENSE` and `publishConfig.access: "restricted"`). Install it one of two ways:
+This package is licensed under **Apache-2.0** but is **not** published to the public npm registry — `publishConfig.access: "restricted"` guards against an accidental public `npm publish`. Install it one of two ways:
 
 ```bash
 # A) Directly from git (no registry needed) — pin a tag or commit:
@@ -576,7 +578,8 @@ Method documentation is in `backend/src/types.ts`. See `backend/src/adapters/mon
 - [docs/MOODLE_SETUP.md](docs/MOODLE_SETUP.md) — step-by-step Moodle external tool configuration.
 - [docs/INTEGRATION_GUIDE.md](docs/INTEGRATION_GUIDE.md) — drop-in checklist for adding LTI to an existing project.
 - [docs/INTEGRATION_TEMPLATE.md](docs/INTEGRATION_TEMPLATE.md) — **copy/fill-in template** for every deployment shape: login-only SSO bridge, full activity with Deep Linking, and full activity without the Deep Linking picker. Decision-gated: it opens with a "confirm choices before writing code" checklist the implementing AI must ask the user first. Start here when scaffolding a new integration.
-- [docs/SAAS_ARCHITECTURE.md](docs/SAAS_ARCHITECTURE.md) — design for evolving the package into a hosted, multi-tenant LTI service (managed gateway and fully hosted product), with isolation, key management, and a phased roadmap.
+- [docs/LTI_INTEGRATION_MANUAL.md](docs/LTI_INTEGRATION_MANUAL.md) — end-to-end integration manual covering the launch/bind flows and platform setup.
+- [docs/LTI_INTEGRATION_AGENT.md](docs/LTI_INTEGRATION_AGENT.md) — condensed, agent-oriented brief of the same integration steps.
 
 ## License
 
