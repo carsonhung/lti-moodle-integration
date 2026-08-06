@@ -137,17 +137,43 @@ await initLti(app, myAdapter, { mountPath: '/api/v1/lti', dbPlugin: ltiDb });
 **Login-only variant** (LTI as an SSO replacement, no teacher resource picker):
 
 ```typescript
-import { loginOnlyAdapter } from './lti/adapters/login-only';
+import {
+  loginOnlyAdapter,
+  resolveLoginSession,
+} from './lti/adapters/login-only';
 
 await initLti(app, loginOnlyAdapter, {
   mountPath: '/api/v1/lti',
   skipDeepLinking: true,
   loginOnlyLaunchPath: '/lti/launch',  // your SPA's bridge route
+  resolveLoginSession,                 // verified student/teacher host policy
   dbPlugin: ltiDb,                     // or set LTI_DB_URL for Mongo
 });
 ```
 
 In login-only mode the core skips registering every `/deeplink/*`, `/launch/manage`, and `/category/*` route, and never invokes adapter methods related to courses/resources/bindings — so the adapter is just 3 methods (`upsertUser`, `generateJwt`, `resolveEffectiveTenant`). See `adapters/login-only.example.ts` for a complete reference.
+
+All adapters may optionally consume verified identity fields on `upsertUser`:
+`platformSubject`, `platform`, `platformId`, and a trusted institutional
+identifier with source metadata. No institutional claim is trusted unless
+`institutionalIdClaim` explicitly selects a custom key or
+`lis.person_sourcedid`.
+
+Use `LtiInitOptions.resolveLoginSession(session)` for host-side resolution after
+`upsertUser` but before `generateJwt`. It receives the verified role/user,
+platform identity, context and LIS snapshots, custom params, course hints,
+resource-link ID, and tenant. It may return a replacement `user`, an
+app-relative `target`, and JSON-object `launchMetadata`. Omitting it preserves
+existing behavior. The login-only example demonstrates verified student course
+routing, a teacher linkage hook with platform/context metadata, and a dashboard
+fallback. Build targets exclusively from this verified session object; never
+accept course or context values supplied later by the browser.
+
+Hosts that supply `onNormalizedLaunch` receive all authenticated normal
+launches and content-selection requests. For Deep Linking, check
+`ctx.isDeepLinkingRequest` and call
+`respondToDeepLinking(ctx, items, options?)`; the response facade keeps signing
+credentials inside the engine.
 
 **Important order of operations:**
 

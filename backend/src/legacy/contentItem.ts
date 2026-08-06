@@ -11,6 +11,7 @@
  */
 
 import { escapeHtml } from '../helpers';
+import type { LtiDeepLinkItem } from '../types';
 import { signOAuth1 } from './oauth1';
 import { LTI_MESSAGE_TYPE_CONTENT_ITEM_SELECTION } from '../constants';
 
@@ -97,21 +98,58 @@ export function buildContentItemsJson(params: {
   resourceId: string;
   text?: string;
 }): string {
-  const custom: Record<string, string> = {
-    [`${params.prefix}_course_id`]: params.courseId,
-    [`${params.prefix}_resource_id`]: params.resourceId,
-  };
-  const item: Record<string, unknown> = {
-    '@type': 'LtiLinkItem',
-    mediaType: 'application/vnd.ims.lti.v1.ltilink',
-    url: params.launchUrl,
-    title: params.title,
-    custom,
-  };
-  if (params.text) item.text = params.text;
+  return buildContentItemsJsonFromItems([
+    {
+      type: 'ltiResourceLink',
+      url: params.launchUrl,
+      title: params.title,
+      text: params.text,
+      custom: {
+        [`${params.prefix}_course_id`]: params.courseId,
+        [`${params.prefix}_resource_id`]: params.resourceId,
+      },
+    },
+  ]);
+}
+
+/**
+ * Convert protocol-neutral deep-link items to the LTI 1.1 Content-Item shape.
+ * Content-Item only has a safe equivalent for launchable LTI resource links;
+ * unsupported 1.3 item types are rejected instead of being lossy-converted.
+ */
+export function buildContentItemsJsonFromItems(items: LtiDeepLinkItem[]): string {
+  if (!items.length) {
+    throw new Error('At least one LTI content item is required.');
+  }
+
+  const graph = items.map((source) => {
+    if (source.type !== 'ltiResourceLink') {
+      throw new Error(`LTI 1.1 Content-Item does not support item type "${source.type}".`);
+    }
+    if (!source.url) {
+      throw new Error('LTI 1.1 Content-Item resource links require an absolute URL.');
+    }
+    const launchUrl = new URL(source.url);
+    if (launchUrl.protocol !== 'https:' && launchUrl.protocol !== 'http:') {
+      throw new Error('LTI 1.1 Content-Item resource links require an HTTP(S) URL.');
+    }
+
+    const item: Record<string, unknown> = {
+      '@type': 'LtiLinkItem',
+      mediaType: 'application/vnd.ims.lti.v1.ltilink',
+      url: launchUrl.toString(),
+      title: source.title,
+    };
+    if (source.text) item.text = source.text;
+    if (source.custom && Object.keys(source.custom).length) item.custom = source.custom;
+    if (source.icon) item.icon = source.icon;
+    if (source.thumbnail) item.thumbnail = source.thumbnail;
+    return item;
+  });
+
   return JSON.stringify({
     '@context': 'http://purl.imsglobal.org/ctx/lti/v1/ContentItem',
-    '@graph': [item],
+    '@graph': graph,
   });
 }
 

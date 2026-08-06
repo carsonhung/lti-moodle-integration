@@ -68,6 +68,10 @@ export interface LtiSessionResponse {
   role?: 'student' | 'teacher';
   /** Tenant id resolved from the binding / agent (or undefined). */
   tenant?: string;
+  /** Optional app-relative destination returned by resolveLoginSession. */
+  target?: string;
+  /** Optional serializable host metadata returned by resolveLoginSession. */
+  launchMetadata?: Record<string, unknown>;
 }
 
 export interface DeepLinkCourse {

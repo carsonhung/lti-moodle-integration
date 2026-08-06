@@ -79,11 +79,7 @@ export async function submitAgsScore(input: AgsScoreInput): Promise<AgsScoreResu
 
   try {
     await grade.submitScore(idtoken, lineItemId, score);
-    logInfo('[LTI AGS prototype] submitScore ok', {
-      userExternalId: input.userExternalId,
-      scoreGiven: input.scoreGiven,
-      scoreMaximum: input.scoreMaximum,
-    });
+    logInfo('[LTI AGS prototype] submitScore ok');
     return { success: true };
   } catch (e: any) {
     logWarn('[LTI AGS prototype] submitScore failed', { message: e?.message });

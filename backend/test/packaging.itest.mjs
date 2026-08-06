@@ -58,6 +58,10 @@ test('packs, installs, and resolves its public exports like a published package'
       'getLtiProvider',
       'verifyBindToken',
       'testPlatformConnection',
+      'respondToDeepLinking',
+      'isSafeLoginTarget',
+      'resolveInstitutionalIdentity',
+      'serializePlatformId',
     ]) {
       assert.equal(typeof backend[name], 'function', `backend export "${name}" is callable`);
     }

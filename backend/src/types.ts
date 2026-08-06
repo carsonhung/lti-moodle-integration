@@ -10,6 +10,9 @@
  * Drizzle).
  */
 
+import type { Request, Response } from 'express';
+import type { DeepLinkResponseFacade } from './deepLinkResponse';
+
 // ─── Shared Value Types ──────────────────────────────────────────────────────
 
 export type LtiRole = 'student' | 'teacher';
@@ -125,6 +128,8 @@ export interface NormalizedLaunch {
   email: string;
   name: string;
   role: LtiRole;
+  /** Stable, platform-scoped LTI subject (`sub` for 1.3; `user_id` for legacy). */
+  platformSubject?: string;
   externalId?: string;
   /** Platform tuple used to key course maps and resource bindings. */
   platform: LtiPlatformContext;
@@ -133,7 +138,97 @@ export interface NormalizedLaunch {
   custom: Record<string, string>;
   /** LMS course-context snapshot for auto-mapping / provisioning. */
   contextSnapshot: LtiContextSnapshot;
+  /** Verified LIS claim subset, when supplied by the platform. */
+  lis?: LtiLisSnapshot;
 }
+
+// ─── Verified identity + login-session resolution ───────────────────────────
+
+export type LtiJsonPrimitive = string | number | boolean | null;
+export type LtiJsonValue = LtiJsonPrimitive | LtiJsonObject | LtiJsonValue[];
+export interface LtiJsonObject {
+  [key: string]: LtiJsonValue;
+}
+
+export interface LtiInstitutionalIdentity {
+  value: string;
+  source: `custom:${string}` | 'lis.person_sourcedid';
+  trusted: true;
+}
+
+export interface LtiVerifiedIdentity {
+  email: string;
+  name: string;
+  role: LtiRole;
+  platformSubject?: string;
+  platform: LtiPlatformContext;
+  /** Stable serialized issuer/client/deployment namespace for simple stores. */
+  platformId: string;
+  externalId?: string;
+  institutionalIdentity?: LtiInstitutionalIdentity;
+}
+
+export interface LtiLisSnapshot {
+  personSourcedId?: string;
+  courseOfferingSourcedId?: string;
+  courseSectionSourcedId?: string;
+}
+
+export interface LtiUserUpsertParams {
+  email: string;
+  name: string;
+  role: LtiRole;
+  platformSubject?: string;
+  platform?: LtiPlatformContext;
+  /** @deprecated Prefer the explicit `platform` tuple. */
+  platformId?: string;
+  externalId?: string;
+  institutionalId?: string;
+  institutionalIdTrusted?: boolean;
+  institutionalIdSource?: LtiInstitutionalIdentity['source'];
+}
+
+export interface LtiLoginSessionContext {
+  version: LtiLaunchVersion;
+  role: LtiRole;
+  user: LtiUser;
+  identity: LtiVerifiedIdentity;
+  contextSnapshot: LtiContextSnapshot;
+  lis: LtiLisSnapshot;
+  custom: Record<string, string>;
+  courseHints: string[];
+  resourceLinkId: string;
+  tenant?: string;
+}
+
+export interface LtiLoginSessionResolution {
+  /** Replacement user used for JWT generation. */
+  user?: LtiUser;
+  /** Safe app-relative destination, e.g. `/courses/123?source=lti`. */
+  target?: string;
+  /** JSON-serializable metadata returned with the session response. */
+  launchMetadata?: LtiJsonObject;
+}
+
+export type ResolveLtiLoginSession = (
+  context: LtiLoginSessionContext
+) => LtiLoginSessionResolution | void | Promise<LtiLoginSessionResolution | void>;
+
+// ─── Host-controlled launch hook ─────────────────────────────────────────────
+
+export interface NormalizedLaunchHookContext {
+  req: Request;
+  res: Response;
+  version: LtiLaunchVersion;
+  isDeepLinkingRequest: boolean;
+  deepLinking?: DeepLinkResponseFacade;
+  rawToken?: unknown;
+}
+
+export type OnNormalizedLaunch = (
+  launch: NormalizedLaunch,
+  ctx: NormalizedLaunchHookContext
+) => unknown | Promise<unknown>;
 
 // ─── Grade links (shared by 1.1 Basic Outcomes and 1.3 AGS) ──────────────────
 
@@ -353,12 +448,7 @@ export interface LtiDatabasePlugin {
 export interface LtiLoginOnlyAdapter {
   readonly customFieldPrefix: string;
 
-  upsertUser(params: {
-    email: string;
-    name: string;
-    role: LtiRole;
-    externalId?: string;
-  }): Promise<LtiUser>;
+  upsertUser(params: LtiUserUpsertParams): Promise<LtiUser>;
 
   generateJwt(user: LtiUser): { token: string; expiresIn: number };
 
@@ -387,12 +477,7 @@ export interface LtiAdapter {
     externalId?: string
   ): Promise<LtiUser | null>;
 
-  upsertUser(params: {
-    email: string;
-    name: string;
-    role: LtiRole;
-    externalId?: string;
-  }): Promise<LtiUser>;
+  upsertUser(params: LtiUserUpsertParams): Promise<LtiUser>;
 
   generateJwt(user: LtiUser): { token: string; expiresIn: number };
 
@@ -588,6 +673,23 @@ export interface LtiInitOptions {
    * compatibility (`true` -> `login-only`, `false` -> `deep-linking`).
    */
   connectMode?: LtiConnectMode;
+  /**
+   * Delegate every authenticated normalized launch to the host. Omit this hook
+   * to retain the built-in launch handling.
+   */
+  onNormalizedLaunch?: OnNormalizedLaunch;
+  /**
+   * Runs after user upsert and immediately before JWT generation on the
+   * built-in 1.3 and legacy session bridges.
+   */
+  resolveLoginSession?: ResolveLtiLoginSession;
+  /**
+   * Select the sole verified launch claim trusted as an institutional ID.
+   * No institutional claim is trusted by default.
+   */
+  institutionalIdClaim?:
+    | { source: 'custom'; key: string }
+    | { source: 'lis.person_sourcedid' };
   devMode?: boolean;
   ltiaas?: boolean;
   tokenMaxAge?: number | false;

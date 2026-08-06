@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Verified login-session resolution**: Added stable LTI platform subjects and
+  platform tuples to user upserts, explicit trusted institutional-ID claim
+  provenance, and an optional `resolveLoginSession` hook that can replace the
+  JWT user and return a safe app-relative target plus serializable launch
+  metadata.
+- **Protocol-neutral content selection**: Added `onNormalizedLaunch` delegation
+  across LTI 1.3 and 1.0a/1.1 plus `respondToDeepLinking()` so hosts can own
+  launch routing and resource selection without handling signing credentials.
 - **LTI 1.0a / 1.1 support (OAuth 1.0a)** — the provider can now be launched from
   older LMSs that speak LTI 1.0a / 1.1, alongside the existing 1.3 path. Off by
   default; enable with `legacyLti: true` (or `LTI_LEGACY_ENABLED=true`) and supply
@@ -64,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Safer launch diagnostics**: Routine logs now report claim presence and keys;
+  `LTI_DEBUG_CLAIMS` emits masked identity fingerprints, while raw PII requires
+  `LTI_DEBUG_RAW_CLAIMS` and still redacts credentials.
+- **Role inference**: Instructor, TeachingAssistant, Administrator, and
+  ContentDeveloper roles now consistently receive teacher-level launch
+  handling.
 - Internal strategy notes (`PACKAGING_DISCUSSION.md`, `SAAS_ARCHITECTURE.md`) were
   moved out of the package's `docs/` into the host monorepo's `docs/internal/`, so
   they ship neither in the npm tarball nor in the standalone public repo. The

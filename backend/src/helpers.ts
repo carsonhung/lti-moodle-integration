@@ -123,6 +123,16 @@ export function getNameFromLtiToken(token: any): string {
   );
 }
 
+export function getSubjectFromLtiToken(token: any): string {
+  return firstNonEmptyString(
+    token?.userInfo?.sub ??
+      token?.sub ??
+      token?.user ??
+      token?.platformContext?.user?.id ??
+      token?.platformContext?.user
+  );
+}
+
 export function getContextId(res: express.Response): string {
   const ctx: any = res.locals?.context;
   const token: any = res.locals?.token;
@@ -227,6 +237,12 @@ export function inferRoleFromLegacyRoles(rolesParam: string): LtiRole {
  * institutional ID instead of email.
  */
 export function getExternalIdFromLti(res: express.Response): string {
+  const lis = getLisFromLti(res);
+  const sourcedId = String(lis?.person_sourcedid ?? '').trim();
+  return /^\d+$/.test(sourcedId) ? sourcedId : '';
+}
+
+export function getLisFromLti(res: express.Response): Record<string, any> {
   const ctx: any = res.locals?.context;
   const token: any = res.locals?.token;
   const lis =
@@ -234,8 +250,7 @@ export function getExternalIdFromLti(res: express.Response): string {
     token?.platformContext?.lis ||
     token?.[LTI_LIS_CLAIM] ||
     token?.platformContext?.[LTI_LIS_CLAIM];
-  const sourcedId = String(lis?.person_sourcedid ?? '').trim();
-  return /^\d+$/.test(sourcedId) ? sourcedId : '';
+  return lis && typeof lis === 'object' ? lis : {};
 }
 
 // ─── LMS Course Identifier Guessing ──────────────────────────────────────────

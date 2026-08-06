@@ -132,7 +132,7 @@ export async function replaceResult(
     const { codeMajor, description } = parseResponse(body);
     const success = status >= 200 && status < 300 && codeMajor?.toLowerCase() === 'success';
     if (success) {
-      logInfo('[LTI 1.1] replaceResult ok', { status, sourcedId: creds.sourcedId, score });
+      logInfo('[LTI 1.1] replaceResult ok', { status });
     } else {
       logWarn('[LTI 1.1] replaceResult failed', { status, codeMajor, description });
     }

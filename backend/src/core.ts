@@ -22,6 +22,7 @@ import type {
   LtiConnectMode,
   NormalizedLaunch,
   LtiGradeLinkStore,
+  LtiPlatformContext,
 } from './types';
 import { logInfo, logWarn, logError } from './logger';
 import {
@@ -38,6 +39,15 @@ import { createInMemoryNonceStore } from './legacy/nonceStore';
 import { createInMemoryGradeLinkStore } from './stores/gradeLinkStore';
 import { createLti11Router } from './legacy/lti11';
 import { registerSendScore } from './grades/sendScore';
+import {
+  createDeepLinkResponseFacade,
+  shouldRegisterDeepLinkHandler,
+} from './deepLinkResponse';
+import {
+  resolveInstitutionalIdentity,
+  resolveLtiLoginSession,
+  serializePlatformId,
+} from './loginSession';
 
 // Integration flows the core supports. Kept local so the package stays portable;
 // the app mirrors these in `shared/lti.ts`.
@@ -56,6 +66,7 @@ import {
   getDeploymentIdFromLtiToken,
   getEmailFromLtiToken,
   getNameFromLtiToken,
+  getSubjectFromLtiToken,
   getContextId,
   getResourceLinkId,
   getCustom,
@@ -63,6 +74,7 @@ import {
   getFrontendBaseUrl,
   inferRoleFromLti,
   getExternalIdFromLti,
+  getLisFromLti,
   guessLmsCourseIdentifiers,
 } from './helpers';
 import { renderDeepLinkLauncher, renderTeacherManagePage } from './deepLinkingUI';
@@ -92,27 +104,27 @@ function safeUrlHost(value: string): string {
 export { verifyBindToken } from './bindToken';
 export type { LtiBindTokenClaims } from './bindToken';
 
-/**
- * JSON.stringify that tolerates circular references (ltijs tokens can hold
- * back-references). Used only by the claims dump below.
- */
-function safeStringify(value: any): string {
-  const seen = new WeakSet();
-  try {
-    return JSON.stringify(
-      value,
-      (_k, v) => {
-        if (typeof v === 'object' && v !== null) {
-          if (seen.has(v)) return '[Circular]';
-          seen.add(v);
-        }
-        return v;
-      },
-      2
-    );
-  } catch {
-    return '[unserializable]';
-  }
+function rawLtiDiagnosticSnapshot(value: unknown): unknown {
+  const seen = new WeakSet<object>();
+  const credentialKey =
+    /(?:authorization|cookie|secret|password|private.?key|access.?token|id.?token|ltik|nonce|state)/i;
+  return JSON.parse(
+    JSON.stringify(value, (key, item) => {
+      if (key && credentialKey.test(key)) return '[REDACTED]';
+      if (typeof item === 'bigint') return item.toString();
+      if (typeof item === 'string') {
+        return item.replace(
+          /([?&](?:sesskey|session_?key|access_?token|id_?token|ltik|nonce|state|code)=)[^&#]*/gi,
+          '$1[REDACTED]'
+        );
+      }
+      if (typeof item === 'object' && item !== null) {
+        if (seen.has(item)) return '[CIRCULAR]';
+        seen.add(item);
+      }
+      return item;
+    })
+  );
 }
 
 /**
@@ -136,48 +148,64 @@ function logLtiClaims(phase: string, token: any, res?: express.Response): void {
   // `title` (full course name) and `type` (e.g. CourseOffering). We also pull
   // the LIS sourcedids and any course-flavoured custom params, plus the fuzzy
   // candidate identifiers the deep-link auto-mapper would try.
-  const course = {
-    contextId: safeStr(context?.id) || '(none)',
-    label: safeStr(context?.label) || '(none)',
-    title: safeStr(context?.title) || '(none)',
-    type: context?.type ?? '(none)',
-    lisCourseSectionSourcedId: safeStr(lis?.course_section_sourcedid) || '(none)',
-    lisCourseOfferingSourcedId: safeStr(lis?.course_offering_sourcedid) || '(none)',
-    customCourseId:
-      safeStr(custom?.course_id || custom?.moodle_course_id || custom?.context_id || custom?.contextId) ||
-      '(none)',
-    candidateIdentifiers: res ? guessLmsCourseIdentifiers(res) : [],
-  };
-
-  logInfo(`[LTI] ${phase} — Moodle course / context`, course);
-
   logInfo(`[LTI] ${phase} — Moodle launch claims (structured)`, {
-    issuer: getIssuerFromLtiToken(token) || '(none)',
-    clientId: getClientIdFromLtiToken(token) || '(none)',
-    deploymentId: getDeploymentIdFromLtiToken(token) || '(none)',
-    user: {
-      sub: safeStr(userInfo.sub || token?.user || pc?.user) || '(none)',
-      name: getNameFromLtiToken(token) || '(none)',
-      givenName: safeStr(userInfo.given_name) || '(none)',
-      familyName: safeStr(userInfo.family_name) || '(none)',
-      email: getEmailFromLtiToken(token) || '(none)',
+    platform: {
+      hasIssuer: !!getIssuerFromLtiToken(token),
+      hasClientId: !!getClientIdFromLtiToken(token),
+      hasDeploymentId: !!getDeploymentIdFromLtiToken(token),
+    },
+    userClaims: {
+      hasSubject: !!getSubjectFromLtiToken(token),
+      hasName: !!getNameFromLtiToken(token),
+      hasEmail: !!getEmailFromLtiToken(token),
     },
     inferredRole: res ? inferRoleFromLti(res) : '(no res)',
     rawRolesClaim: pc?.roles ?? token?.['https://purl.imsglobal.org/spec/lti/claim/roles'] ?? '(none)',
-    context,
-    resourceLink: pc?.resource ?? '(none)',
-    launchPresentation: pc?.launchPresentation ?? pc?.presentation ?? '(none)',
-    lis,
-    custom,
-    externalId: res ? (getExternalIdFromLti(res) || '(none)') : '(no res)',
+    contextClaims: {
+      present: !!safeStr(context?.id),
+      hasLabel: !!safeStr(context?.label),
+      hasTitle: !!safeStr(context?.title),
+      type: context?.type ?? '(none)',
+    },
+    lisClaims: {
+      hasPersonSourcedId: !!safeStr(lis?.person_sourcedid),
+      hasCourseSectionSourcedId: !!safeStr(lis?.course_section_sourcedid),
+      hasCourseOfferingSourcedId: !!safeStr(lis?.course_offering_sourcedid),
+    },
+    customKeys: Object.keys(custom),
     userInfoKeys: Object.keys(userInfo),
     platformContextKeys: Object.keys(pc),
     tokenTopLevelKeys: Object.keys(token ?? {}),
   });
 
   if (truthy(process.env.LTI_DEBUG_CLAIMS)) {
-    logInfo(`[LTI] ${phase} — Moodle launch claims (raw token JSON, LTI_DEBUG_CLAIMS=true)`);
-    logInfo(safeStringify(token));
+    const masked = (value: unknown) => {
+      const normalized = safeStr(value).trim();
+      if (!normalized) return { present: false, length: 0 };
+      return {
+        present: true,
+        length: normalized.length,
+        numeric: /^\d+$/.test(normalized),
+        fingerprint:
+          normalized.length <= 4
+            ? '*'.repeat(normalized.length)
+            : `${normalized.slice(0, 2)}…${normalized.slice(-2)}`,
+      };
+    };
+    logWarn(`[LTI] ${phase} — masked identity claim diagnostics`, {
+      subject: masked(getSubjectFromLtiToken(token)),
+      email: masked(getEmailFromLtiToken(token)),
+      lisPersonSourcedId: masked(res ? getExternalIdFromLti(res) : ''),
+      custom: Object.fromEntries(
+        Object.entries(custom).map(([key, value]) => [key, masked(value)])
+      ),
+    });
+  }
+  if (truthy(process.env.LTI_DEBUG_RAW_CLAIMS)) {
+    logWarn(`[LTI] ${phase} — RAW launch diagnostic; contains PII`, {
+      token: rawLtiDiagnosticSnapshot(token),
+      context: rawLtiDiagnosticSnapshot(res?.locals?.context ?? null),
+    });
   }
 }
 
@@ -225,6 +253,51 @@ function buildLtiContextSnapshot(res: express.Response): LtiContextSnapshot {
   };
 }
 
+function buildPlatformContext(token: any, res: express.Response): LtiPlatformContext {
+  return {
+    issuer: getIssuerFromLtiToken(token),
+    clientId: getClientIdFromLtiToken(token),
+    deploymentId: getDeploymentIdFromLtiToken(token),
+    contextId: getContextId(res),
+  };
+}
+
+function stringCustom(res: express.Response): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(getCustom(res))
+      .map(([key, value]) => [key, safeStr(value).trim()])
+      .filter(([, value]) => value)
+  );
+}
+
+function buildNormalizedLaunch(
+  token: any,
+  res: express.Response,
+  role: NormalizedLaunch['role'],
+  email = getEmailFromLtiToken(token)
+): NormalizedLaunch {
+  const lis = getLisFromLti(res);
+  return {
+    version: '1.3',
+    email,
+    name: getNameFromLtiToken(token) || email,
+    role,
+    platformSubject: getSubjectFromLtiToken(token) || undefined,
+    externalId: getExternalIdFromLti(res) || undefined,
+    platform: buildPlatformContext(token, res),
+    resourceLinkId: getResourceLinkId(res),
+    custom: stringCustom(res),
+    contextSnapshot: buildLtiContextSnapshot(res),
+    lis: {
+      personSourcedId: safeStr(lis?.person_sourcedid).trim() || undefined,
+      courseOfferingSourcedId:
+        safeStr(lis?.course_offering_sourcedid).trim() || undefined,
+      courseSectionSourcedId:
+        safeStr(lis?.course_section_sourcedid).trim() || undefined,
+    },
+  };
+}
+
 // `resolveOrProvisionCourseForContext` now lives in launchHandler.ts (shared by
 // the 1.3 and 1.1 context-mapping flows) and is imported above.
 
@@ -236,6 +309,16 @@ export async function initLti(
   options?: LtiInitOptions
 ): Promise<void> {
   const opts = options ?? {};
+  const institutionalIdClaim =
+    opts.institutionalIdClaim ??
+    (() => {
+      const customKey = safeStr(process.env.LTI_INSTITUTIONAL_ID_CUSTOM_CLAIM).trim();
+      if (customKey) return { source: 'custom' as const, key: customKey };
+      return safeStr(process.env.LTI_INSTITUTIONAL_ID_SOURCE).trim().toLowerCase() ===
+        'lis_person_sourcedid'
+        ? ({ source: 'lis.person_sourcedid' } as const)
+        : undefined;
+    })();
 
   if (!truthy(process.env.LTI_ENABLED)) {
     logInfo('[LTI] Disabled (set LTI_ENABLED=true to enable)');
@@ -256,6 +339,7 @@ export async function initLti(
   const isLoginOnly = connectMode === LTI_CONNECT_MODES.LOGIN_ONLY;
   const isContextMapping = connectMode === LTI_CONNECT_MODES.CONTEXT_MAPPING;
   const isDeepLinking = connectMode === LTI_CONNECT_MODES.DEEP_LINKING;
+  const onNormalizedLaunch = opts.onNormalizedLaunch;
 
   // Deep-link routes (`/deeplink/*`, `/launch/manage`, `/category/*`) are only
   // registered in deep-linking mode. Login-only and context-mapping skip them.
@@ -414,28 +498,24 @@ export async function initLti(
       // entered.
       await captureAgsGradeLink(token, res);
 
+      if (onNormalizedLaunch) {
+        const launch = buildNormalizedLaunch(token, res, ltiRole, email);
+        return onNormalizedLaunch(launch, {
+          req,
+          res,
+          version: '1.3',
+          isDeepLinkingRequest: false,
+          rawToken: token,
+        });
+      }
+
       // Login-only and context-mapping launches are handled by the shared,
       // protocol-agnostic normalized launch handler (also used by the 1.1
       // legacy path). Build a NormalizedLaunch from the ltijs token and
       // delegate. Deep-linking-mode launches fall through to the binding
       // resolution below.
       if (isLoginOnly || isContextMapping) {
-        const launch: NormalizedLaunch = {
-          version: '1.3',
-          email,
-          name: getNameFromLtiToken(token) || email,
-          role: ltiRole,
-          externalId: getExternalIdFromLti(res) || undefined,
-          platform: {
-            issuer: getIssuerFromLtiToken(token),
-            clientId: getClientIdFromLtiToken(token),
-            deploymentId: getDeploymentIdFromLtiToken(token),
-            contextId: getContextId(res),
-          },
-          resourceLinkId: getResourceLinkId(res),
-          custom: getCustom(res) as Record<string, string>,
-          contextSnapshot: buildLtiContextSnapshot(res),
-        };
+        const launch = buildNormalizedLaunch(token, res, ltiRole, email);
 
         const launchCtx: NormalizedLaunchContext = {
           mode: isLoginOnly ? 'login-only' : 'context-mapping',
@@ -609,15 +689,35 @@ export async function initLti(
       const role = inferRoleFromLti(res);
       const name = getNameFromLtiToken(token) || email;
       const externalId = getExternalIdFromLti(res);
+      const platformSubject = getSubjectFromLtiToken(token) || undefined;
+      const platform = buildPlatformContext(token, res);
+      const platformId = serializePlatformId(platform);
+      const institutionalIdentity = resolveInstitutionalIdentity(
+        institutionalIdClaim,
+        getCustom(res),
+        getLisFromLti(res)?.person_sourcedid
+      );
 
       logInfo('[LTI] /session — bridge request', {
-        email,
         role,
-        name,
-        externalId: externalId || '(none)',
+        hasEmail: true,
+        hasPlatformSubject: !!platformSubject,
+        hasExternalId: !!externalId,
+        institutionalIdSource: institutionalIdentity?.source ?? '(none)',
       });
 
-      const user = await loginAdapter.upsertUser({ email, name, role, externalId });
+      let user = await loginAdapter.upsertUser({
+        email,
+        name,
+        role,
+        platformSubject,
+        platform,
+        platformId,
+        externalId,
+        institutionalId: institutionalIdentity?.value,
+        institutionalIdTrusted: !!institutionalIdentity,
+        institutionalIdSource: institutionalIdentity?.source,
+      });
 
       if (resolvesCourse && autoEnrollStudents && role === 'student') {
         const custom = getCustom(res);
@@ -747,6 +847,36 @@ export async function initLti(
         await fullAdapter.grantTeacherTenantAccess(user, tenant);
       }
 
+      const lis = getLisFromLti(res);
+      const contextSnapshot = buildLtiContextSnapshot(res);
+      const sessionResolution = await resolveLtiLoginSession(opts.resolveLoginSession, {
+        version: '1.3',
+        role,
+        user,
+        identity: {
+          email,
+          name,
+          role,
+          platformSubject,
+          platform,
+          platformId,
+          externalId: externalId || undefined,
+          institutionalIdentity,
+        },
+        contextSnapshot,
+        lis: {
+          personSourcedId: safeStr(lis?.person_sourcedid).trim() || undefined,
+          courseOfferingSourcedId:
+            safeStr(lis?.course_offering_sourcedid).trim() || undefined,
+          courseSectionSourcedId:
+            safeStr(lis?.course_section_sourcedid).trim() || undefined,
+        },
+        custom: stringCustom(res),
+        courseHints: contextSnapshot.identifierCandidates,
+        resourceLinkId: getResourceLinkId(res),
+        tenant,
+      });
+      user = sessionResolution.user;
       const jwt = loginAdapter.generateJwt(user);
 
       return res.status(200).json({
@@ -755,6 +885,10 @@ export async function initLti(
         expiresIn: jwt.expiresIn,
         role,
         tenant,
+        ...(sessionResolution.target ? { target: sessionResolution.target } : {}),
+        ...(sessionResolution.launchMetadata
+          ? { launchMetadata: sessionResolution.launchMetadata }
+          : {}),
       });
     } catch (e: any) {
       logError('[LTI] /session failed', { message: e?.message, stack: e?.stack });
@@ -762,44 +896,65 @@ export async function initLti(
     }
   });
 
-  // ── Deep-linking surfaces (skipped entirely in login-only mode) ────
-
-  if (!skipDeepLinking) {
-    // Shadow the outer `adapter` (LtiAdapter | LtiLoginOnlyAdapter) with the
-    // narrowed full-adapter type so the existing deep-link handlers below
-    // type-check against the full method set without per-call casts.
-    const adapter: LtiAdapter = fullAdapter;
-
   // ── onDeepLinking — Teacher configuring the activity ───────────────
 
-  lti.onDeepLinking(async (token: any, req: express.Request, res: express.Response) => {
-    try {
-      const email = getEmailFromLtiToken(token);
-      const role = inferRoleFromLti(res);
-      const contextId = getContextId(res);
-      const deepLinkSettings =
-        token?.platformContext?.deepLinkingSettings ??
-        res.locals?.token?.platformContext?.deepLinkingSettings;
-      logInfo('[LTI] onDeepLinking — teacher configuring activity', {
-        email,
-        role,
-        contextId,
-        hasDeepLinkSettings: !!deepLinkSettings,
-        hasReturnUrl: !!deepLinkSettings?.deep_link_return_url,
-        redirectTo: `${mountPath}/deeplink?debug=1`,
-      });
-      // Do NOT use { newResource: true } — it creates a fresh context that
-      // strips deepLinkingSettings, breaking the JWT creation on submit.
-      return lti.redirect(res, `${mountPath}/deeplink?debug=1`);
-    } catch (e: any) {
-      logError('[LTI] onDeepLinking failed', { message: e?.message, stack: e?.stack });
-      return res
-        .status(200)
-        .send(
-          '<div style="font-family:system-ui;padding:24px;">LTI deep linking error. Please try again later.</div>'
-        );
-    }
-  });
+  if (shouldRegisterDeepLinkHandler(connectMode, !!onNormalizedLaunch)) {
+    lti.onDeepLinking(async (token: any, req: express.Request, res: express.Response) => {
+      try {
+        const email = getEmailFromLtiToken(token);
+        const role = inferRoleFromLti(res);
+        const contextId = getContextId(res);
+        const deepLinkSettings =
+          token?.platformContext?.deepLinkingSettings ??
+          res.locals?.token?.platformContext?.deepLinkingSettings;
+
+        if (onNormalizedLaunch) {
+          const returnUrl = safeStr(deepLinkSettings?.deep_link_return_url);
+          const deepLinking = returnUrl
+            ? createDeepLinkResponseFacade({
+                version: '1.3',
+                returnUrl,
+                respond: async (items, responseOptions) =>
+                  lti.DeepLinking.createDeepLinkingForm(
+                    res.locals?.token ?? token,
+                    items,
+                    responseOptions
+                  ),
+              })
+            : undefined;
+          return onNormalizedLaunch(buildNormalizedLaunch(token, res, role, email), {
+            req,
+            res,
+            version: '1.3',
+            isDeepLinkingRequest: true,
+            deepLinking,
+            rawToken: token,
+          });
+        }
+
+        logInfo('[LTI] onDeepLinking — teacher configuring activity', {
+          role,
+          contextId,
+          hasDeepLinkSettings: !!deepLinkSettings,
+          hasReturnUrl: !!deepLinkSettings?.deep_link_return_url,
+          redirectTo: `${mountPath}/deeplink?debug=1`,
+        });
+        return lti.redirect(res, `${mountPath}/deeplink?debug=1`);
+      } catch (e: any) {
+        logError('[LTI] onDeepLinking failed', { message: e?.message, stack: e?.stack });
+        return res
+          .status(200)
+          .send(
+            '<div style="font-family:system-ui;padding:24px;">LTI deep linking error. Please try again later.</div>'
+          );
+      }
+    });
+  }
+
+  // ── Built-in deep-linking surfaces (deep-linking mode only) ─────────
+
+  if (!skipDeepLinking) {
+    const adapter: LtiAdapter = fullAdapter;
 
   // ── Deep link launcher (shown in the Moodle iframe) ────────────────
 
@@ -1906,6 +2061,9 @@ export async function initLti(
         nonceStore,
         gradeLinkStore,
         connectMode,
+        onNormalizedLaunch,
+        resolveLoginSession: opts.resolveLoginSession,
+        institutionalIdClaim,
         mountPath,
         legacyMountPath,
         launchRedirectPath,

@@ -38,6 +38,13 @@ export type {
 // ── Normalized launch handler (shared by 1.3 + 1.1) ──────────────────────────
 export { handleNormalizedLaunch, resolveOrProvisionCourseForContext } from './launchHandler';
 export type { NormalizedLaunchContext } from './launchHandler';
+export { respondToDeepLinking } from './deepLinkResponse';
+export type { DeepLinkResponseFacade, DeepLinkResponseOptions } from './deepLinkResponse';
+export {
+  isSafeLoginTarget,
+  resolveInstitutionalIdentity,
+  serializePlatformId,
+} from './loginSession';
 
 // ── LTI 1.0a / 1.1 (legacy) + grade passback ─────────────────────────────────
 export { createInMemoryNonceStore } from './legacy/nonceStore';
@@ -78,7 +85,19 @@ export type {
   LtiStudentUsage,
   // Normalized launch + legacy/grade types
   NormalizedLaunch,
+  NormalizedLaunchHookContext,
+  OnNormalizedLaunch,
   LtiLaunchVersion,
+  LtiUserUpsertParams,
+  LtiVerifiedIdentity,
+  LtiInstitutionalIdentity,
+  LtiLisSnapshot,
+  LtiLoginSessionContext,
+  LtiLoginSessionResolution,
+  ResolveLtiLoginSession,
+  LtiJsonPrimitive,
+  LtiJsonValue,
+  LtiJsonObject,
   LtiConsumer,
   LtiConsumerStore,
   LtiConsumerSummary,

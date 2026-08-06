@@ -15,6 +15,7 @@
  *   mountPath: '/api/lti',
  *   skipDeepLinking: true,
  *   loginOnlyLaunchPath: '/lti/launch', // where the SPA bridge lives
+ *   resolveLoginSession,                // verified host routing/linkage hook
  *   dbPlugin: myLtijsSequelizePlugin,   // or set LTI_DB_URL for Mongo
  * });
  * ```
@@ -30,7 +31,13 @@
  * launch lands in the same `users` row as the rest of your auth surface.
  */
 
-import type { LtiLoginOnlyAdapter, LtiUser, LtiRole } from '../types';
+import type {
+  LtiLoginOnlyAdapter,
+  LtiLoginSessionContext,
+  LtiLoginSessionResolution,
+  LtiUser,
+  LtiRole,
+} from '../types';
 
 // ─── Project-specific imports (swap with yours) ───────────────────────────
 
@@ -53,6 +60,14 @@ declare function signToken(user: {
   email: string;
   roles: string[];
 }): { token: string; expiresIn: number };
+declare function handleVerifiedTeacherLaunch(input: {
+  user: LtiUser;
+  staffId?: string;
+  platformId: string;
+  contextId: string;
+  courseCode: string;
+  launchMetadata: Readonly<Record<string, string>>;
+}): Promise<{ user?: LtiUser; requestId?: string }>;
 
 // ─── Role mapping ─────────────────────────────────────────────────────────
 
@@ -74,6 +89,61 @@ function mapLtiRoleToProjectRoles(role: LtiRole): string[] {
     default:
       return ['student'];
   }
+}
+
+// Replace this with your institution's strict, fail-closed course convention.
+function firstVerifiedCourseCode(session: LtiLoginSessionContext): string | undefined {
+  const candidates = [
+    session.contextSnapshot.label,
+    ...session.courseHints,
+    session.lis.courseSectionSourcedId,
+    session.lis.courseOfferingSourcedId,
+    session.contextSnapshot.customCourseId,
+    ...Object.values(session.custom),
+  ];
+  return candidates.find((value) => typeof value === 'string' && /^[A-Z]{4}\d{4}$/.test(value));
+}
+
+/**
+ * Runs after the launch has been cryptographically verified and the adapter has
+ * upserted the user, but before the app JWT is signed. Never supplement this
+ * input with course/context values posted by the browser.
+ */
+export async function resolveLoginSession(
+  session: LtiLoginSessionContext,
+): Promise<LtiLoginSessionResolution> {
+  const fallback = '/dashboard';
+  const courseCode = firstVerifiedCourseCode(session);
+  const contextId = session.contextSnapshot.contextId;
+  const verifiedContext = Boolean(
+    contextId && contextId === session.identity.platform.contextId,
+  );
+  if (!courseCode || !verifiedContext) return { target: fallback };
+
+  if (session.role === 'student') {
+    return { target: `/courses/${encodeURIComponent(courseCode)}` };
+  }
+
+  // Institutional identity is present only when `institutionalIdClaim` was
+  // explicitly configured. Treat it as optional and let host policy validate it.
+  const linked = await handleVerifiedTeacherLaunch({
+    user: session.user,
+    staffId: session.identity.institutionalIdentity?.value,
+    platformId: session.identity.platformId,
+    contextId,
+    courseCode,
+    launchMetadata: Object.freeze({
+      version: session.version,
+      resourceLinkId: session.resourceLinkId,
+    }),
+  });
+  return {
+    user: linked.user ?? session.user,
+    target: linked.requestId
+      ? `/teacher/linkage/${encodeURIComponent(linked.requestId)}`
+      : fallback,
+    launchMetadata: { courseCode, teacherLinkageRequested: Boolean(linked.requestId) },
+  };
 }
 
 // ─── Adapter ──────────────────────────────────────────────────────────────

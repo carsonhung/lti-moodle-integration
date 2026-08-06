@@ -27,6 +27,9 @@ import type {
   LtiConnectMode,
   NormalizedLaunch,
   LtiLaunchVersion,
+  OnNormalizedLaunch,
+  ResolveLtiLoginSession,
+  LtiInitOptions,
 } from '../types';
 import {
   getToolBaseUrl,
@@ -48,8 +51,15 @@ import {
 import {
   renderContentItemPicker,
   buildContentItemsJson,
+  buildContentItemsJsonFromItems,
   buildSignedContentItemReturn,
 } from './contentItem';
+import { createDeepLinkResponseFacade } from '../deepLinkResponse';
+import {
+  resolveInstitutionalIdentity,
+  resolveLtiLoginSession,
+  serializePlatformId,
+} from '../loginSession';
 import {
   LTI_1P1_DEPLOYMENT_ID,
   LAUNCH_TICKET_TTL_SECONDS,
@@ -62,6 +72,11 @@ export interface Lti11RouterConfig {
   nonceStore: LtiNonceStore;
   gradeLinkStore: LtiGradeLinkStore;
   connectMode: LtiConnectMode;
+  /** Host-controlled launch hook (shared with the 1.3 path). When set, the
+   *  legacy router delegates launches to it instead of the built-in handler. */
+  onNormalizedLaunch?: OnNormalizedLaunch;
+  resolveLoginSession?: ResolveLtiLoginSession;
+  institutionalIdClaim?: LtiInitOptions['institutionalIdClaim'];
   mountPath: string;
   legacyMountPath: string;
   launchRedirectPath: string;
@@ -83,12 +98,20 @@ interface LaunchTicketClaims {
   name: string;
   role: 'student' | 'teacher';
   externalId?: string;
+  platformSubject?: string;
   version: LtiLaunchVersion;
   issuer: string;
   clientId: string;
   deploymentId: string;
   contextId: string;
   resourceLinkId: string;
+  contextSnapshot: LtiContextSnapshot;
+  custom: Record<string, string>;
+  lis: {
+    personSourcedId?: string;
+    courseOfferingSourcedId?: string;
+    courseSectionSourcedId?: string;
+  };
 }
 
 interface ContentItemStateClaims {
@@ -157,11 +180,17 @@ function mapToNormalizedLaunch(params: Record<string, string>): NormalizedLaunch
     email,
     name,
     role: inferRoleFromLegacyRoles(params.roles),
+    platformSubject: safeStr(params.user_id) || undefined,
     externalId: safeStr(params.user_id) || undefined,
     platform: { issuer, clientId, deploymentId: LTI_1P1_DEPLOYMENT_ID, contextId },
     resourceLinkId: safeStr(params.resource_link_id),
     custom: extractCustom(params),
     contextSnapshot: buildLegacyContextSnapshot(params),
+    lis: {
+      personSourcedId: safeStr(params.lis_person_sourcedid) || undefined,
+      courseOfferingSourcedId: safeStr(params.lis_course_offering_sourcedid) || undefined,
+      courseSectionSourcedId: safeStr(params.lis_course_section_sourcedid) || undefined,
+    },
   };
 }
 
@@ -183,12 +212,20 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
       name: launch.name,
       role: launch.role,
       externalId: launch.externalId,
+      platformSubject: launch.platformSubject,
       version: launch.version,
       issuer: launch.platform.issuer,
       clientId: launch.platform.clientId,
       deploymentId: launch.platform.deploymentId,
       contextId: launch.platform.contextId,
       resourceLinkId: launch.resourceLinkId,
+      contextSnapshot: launch.contextSnapshot,
+      custom: launch.custom,
+      lis: {
+        personSourcedId: launch.lis?.personSourcedId,
+        courseOfferingSourcedId: launch.contextSnapshot.lisCourseOfferingSourcedId,
+        courseSectionSourcedId: launch.contextSnapshot.lisCourseSectionSourcedId,
+      },
     };
     return jwt.sign(claims, config.launchTicketSecret, { expiresIn: LAUNCH_TICKET_TTL_SECONDS });
   };
@@ -267,6 +304,23 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
       }
     }
 
+    // Host-controlled hook: when supplied, the host owns 1.1/1.0a launch
+    // decisioning exactly as it does for 1.3 (one hook, all protocols). The
+    // outcome grade link above is already captured for later score passback.
+    if (config.onNormalizedLaunch) {
+      logInfo('[LTI 1.1] basic launch ? delegating to host onNormalizedLaunch', {
+        version: launch.version,
+        email: launch.email,
+        role: launch.role,
+      });
+      return config.onNormalizedLaunch(launch, {
+        req,
+        res,
+        version: launch.version,
+        isDeepLinkingRequest: false,
+      });
+    }
+
     const isLoginOnly = config.connectMode === 'login-only';
     const ticket = mintLaunchTicket(launch);
 
@@ -311,6 +365,43 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
     const launch = mapToNormalizedLaunch(params);
     if (launch.role !== 'teacher') {
       return res.status(200).send(MSG_HTML('Only instructors can configure this activity.'));
+    }
+
+    if (config.onNormalizedLaunch) {
+      const data = safeStr(params.data) || undefined;
+      const deepLinking = createDeepLinkResponseFacade({
+        version: launch.version,
+        returnUrl,
+        respond: async (items) => {
+          const contentItemsJson = buildContentItemsJsonFromItems(items);
+          return buildSignedContentItemReturn({
+            returnUrl,
+            data,
+            contentItemsJson,
+            consumerKey: consumer.key,
+            consumerSecret: consumer.secret,
+          });
+        },
+      });
+
+      logInfo('[LTI 1.1] content-item request ? delegating to host onNormalizedLaunch', {
+        version: launch.version,
+        email: launch.email,
+        returnHost: (() => {
+          try {
+            return new URL(returnUrl).host;
+          } catch {
+            return '(invalid)';
+          }
+        })(),
+      });
+      return config.onNormalizedLaunch(launch, {
+        req,
+        res,
+        version: launch.version,
+        isDeepLinkingRequest: true,
+        deepLinking,
+      });
     }
 
     const teacher = await fullAdapter.resolveOrProvisionTeacher(
@@ -451,11 +542,30 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
         });
       }
 
-      const user = await config.adapter.upsertUser({
+      const platform = {
+        issuer: claims.issuer,
+        clientId: claims.clientId,
+        deploymentId: claims.deploymentId,
+        contextId: claims.contextId,
+      };
+      const platformId = serializePlatformId(platform);
+      const institutionalIdentity = resolveInstitutionalIdentity(
+        config.institutionalIdClaim,
+        claims.custom ?? {},
+        claims.lis?.personSourcedId
+      );
+
+      let user = await config.adapter.upsertUser({
         email: claims.email,
         name: claims.name || claims.email,
         role: claims.role,
+        platformSubject: claims.platformSubject,
+        platform,
+        platformId,
         externalId: claims.externalId,
+        institutionalId: institutionalIdentity?.value,
+        institutionalIdTrusted: !!institutionalIdentity,
+        institutionalIdSource: institutionalIdentity?.source,
       });
 
       // Auto-enroll students in context-mapping mode (mirrors the 1.3 bridge).
@@ -465,12 +575,6 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
         claims.role === 'student'
       ) {
         try {
-          const platform = {
-            issuer: claims.issuer,
-            clientId: claims.clientId,
-            deploymentId: claims.deploymentId,
-            contextId: claims.contextId,
-          };
           let courseId = '';
           const mapped = await fullAdapter.findCourseMap(platform);
           if (mapped) courseId = mapped.courseId;
@@ -491,6 +595,28 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
       }
 
       const tenant = config.adapter.resolveEffectiveTenant();
+      const sessionResolution = await resolveLtiLoginSession(config.resolveLoginSession, {
+        version: claims.version,
+        role: claims.role,
+        user,
+        identity: {
+          email: claims.email,
+          name: claims.name || claims.email,
+          role: claims.role,
+          platformSubject: claims.platformSubject,
+          platform,
+          platformId,
+          externalId: claims.externalId,
+          institutionalIdentity,
+        },
+        contextSnapshot: claims.contextSnapshot,
+        lis: claims.lis ?? {},
+        custom: claims.custom ?? {},
+        courseHints: claims.contextSnapshot?.identifierCandidates ?? [],
+        resourceLinkId: claims.resourceLinkId,
+        tenant,
+      });
+      user = sessionResolution.user;
       const appJwt = config.adapter.generateJwt(user);
 
       return res.status(200).json({
@@ -499,6 +625,10 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
         expiresIn: appJwt.expiresIn,
         role: claims.role,
         tenant,
+        ...(sessionResolution.target ? { target: sessionResolution.target } : {}),
+        ...(sessionResolution.launchMetadata
+          ? { launchMetadata: sessionResolution.launchMetadata }
+          : {}),
       });
     } catch (e: any) {
       logError('[LTI 1.1] /session failed', { message: e?.message, stack: e?.stack });
