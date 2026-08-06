@@ -45,6 +45,34 @@ export {
   resolveInstitutionalIdentity,
   serializePlatformId,
 } from './loginSession';
+export {
+  BROKER_DEFAULT_JWKS_PATH,
+  BROKER_LTIK_ALGORITHMS,
+  BROKER_LTIK_CONSUME_PATH,
+  BROKER_LTIK_CONTRACT_VERSION,
+  BROKER_LTIK_TOKEN_TYPE,
+  BrokerLtikContractError,
+  brokerCourseIdentifierCandidates,
+  brokerPlatformContext,
+  brokerTeacherPromotionContext,
+  consumeBrokerLtik,
+  createBrokerLtikVerifier,
+  parseBrokerLtikClaims,
+  verifyBrokerLtik,
+} from './brokerClient';
+export type {
+  BrokerContractCompatibility,
+  BrokerLaunchMode,
+  BrokerLtikClaims,
+  BrokerLtikContext,
+  BrokerLtikPlatform,
+  BrokerLtikUser,
+  BrokerTeacherPromotionContext,
+  ConsumeBrokerLtikOptions,
+  CreateBrokerLtikVerifierOptions,
+  VerifiedBrokerLtik,
+  VerifyBrokerLtikOptions,
+} from './brokerClient';
 
 // ── LTI 1.0a / 1.1 (legacy) + grade passback ─────────────────────────────────
 export { createInMemoryNonceStore } from './legacy/nonceStore';

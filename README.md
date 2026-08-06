@@ -15,6 +15,8 @@ Extracted from the [TALIC Chatbot project](../) and made framework-agnostic so i
 - **Deep Linking** — Teachers pick a course + resource (or category) in a clean UI (Vue or React component provided); the selection is persisted as a binding for that LMS activity.
 - **Session Bridge** — Exchanges the LTI launch token (`ltik`) for your app's JWT so the SPA can authenticate.
 - **Platform Registration** — Admin API + UI (Vue or React) for registering LMS platforms (Moodle, Canvas, etc.).
+- **Broker consumer contract** — Verify and atomically consume central-broker
+  `broker.ltik` launches with shared v2 platform, course, role, and identity-provenance types.
 - **Vue or React frontend** — Ship the same LTI flows with Vue 3 (`frontend/src/views/`) or React 18 (`frontend/src/react/`); both share one framework-neutral `api.ts`.
 - **Auto-mapping** — Tries to match Moodle courses to your app's courses using context identifiers, course IDs, course codes, etc.
 - **Auto-enrollment** — Optionally adds students to a course when they launch.
@@ -265,18 +267,17 @@ To move to the next project: copy this folder in unchanged, repeat steps 1–4. 
 
 **Option C — Install as a package (`npm install`).** The folder is now packaged so you can depend on it like any other module instead of copying source. The backend ships compiled (`backend/dist` with `.d.ts`); the frontend components ship as source under the `./frontend/*` subpath export and are resolved by your own bundler.
 
-This package is licensed under **Apache-2.0** but is **not** published to the public npm registry — `publishConfig.access: "restricted"` guards against an accidental public `npm publish`. Install it one of two ways:
+This Apache-2.0 package is published on the public npm registry. Prefer an exact
+version in production so upgrades remain deliberate:
 
 ```bash
-# A) Directly from git (no registry needed) — pin a tag or commit:
-npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.0.0
+npm install lti-moodle-integration@1.1.0
 
-# B) From a private registry (GitHub Packages / Verdaccio / Artifactory),
-#    after `npm publish` from this folder:
-npm install lti-moodle-integration
+# Git remains available as a fallback — pin a tag or commit:
+npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.1.0
 ```
 
-> Installing from git runs the `prepare` script, which npm executes **after** installing the package's dev dependencies — so `tsc` is available and `backend/dist` is compiled automatically on the consumer's machine. The same `prepare` hook runs at `npm pack` / `npm publish` time for the registry path. (Pin a tag/commit with `#v1.0.0`; without it npm installs the default branch HEAD.)
+> Installing from git runs the `prepare` script, which npm executes **after** installing the package's dev dependencies — so `tsc` is available and `backend/dist` is compiled automatically on the consumer's machine. The same `prepare` hook runs at `npm pack` / `npm publish` time for the registry path. Without a tag or exact registry version, installs can change unexpectedly.
 
 Then consume the published entry points instead of relative paths:
 
@@ -304,6 +305,44 @@ Choose the consumption model by how much you expect to diverge from the module:
 | You edit the core | Yes (forked) | Yes (vibe-code in the folder) | No (consume releases) |
 | Upgrades | Manual re-copy | `git pull` the folder | `npm update` / bump version |
 | Best for | One-off forks | Active co-development | Many independent consumers |
+
+---
+
+## Consuming a central LTI broker
+
+Apps behind the TALIC broker register an allow-listed backend callback and use
+the shared contract instead of defining local claim interfaces:
+
+```ts
+import {
+  consumeBrokerLtik,
+  createBrokerLtikVerifier,
+} from 'lti-moodle-integration/backend';
+
+const verify = createBrokerLtikVerifier({
+  issuer: process.env.BROKER_BASE_URL!,
+  audience: process.env.BROKER_APP_ID!,
+});
+
+const verified = await verify(req.query.ltik as string);
+await consumeBrokerLtik(req.query.ltik as string, {
+  baseUrl: process.env.BROKER_BASE_URL!,
+});
+```
+
+The v2 token type is `tt = broker.ltik`. It always includes `mode`, normalized
+roles, and the verified platform `(issuer, clientId, deploymentId)` tuple.
+`course-based` and `course-resource` modes also require signed context; trusted
+institutional identity includes its configured LIS/custom provenance. Legacy v1
+tokens remain login-compatible but are insufficient for staff promotion.
+
+Set `BROKER_BASE_URL` to the public broker issuer and `BROKER_APP_ID` to the App
+record id/audience. In the broker registry, allow-list the full backend callback,
+set course-aware apps to `course-based`, and add a routing rule for the intended
+Moodle `(issuer, clientId, deploymentId)` (plus context/resource dimensions only
+when intentionally narrower). Production broker deployments must use their
+durable registry: `/services/token` atomically consumes the JTI and rejects
+repeat/concurrent callbacks.
 
 ---
 

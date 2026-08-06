@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Broker contract CI coverage**: Added callback validation for signature,
+  audience, token type/version, original platform tuple, trusted Staff ID
+  provenance, roles, strict `TALIC001_2A_2026` parsing, login/course modes, and
+  atomic concurrent JTI consumption, plus typecheck/package gates.
+- **Shared broker `ltik` client**: Exported the v2 `tt = broker.ltik`
+  verifier, durable broker-consume helper, course/platform helpers, and
+  fail-closed teacher-promotion evidence. Legacy v1 remains login-compatible.
 - **Verified login-session resolution**: Added stable LTI platform subjects and
   platform tuples to user upserts, explicit trusted institutional-ID claim
   provenance, and an optional `resolveLoginSession` hook that can replace the

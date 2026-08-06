@@ -274,9 +274,11 @@ function buildNormalizedLaunch(
   token: any,
   res: express.Response,
   role: NormalizedLaunch['role'],
-  email = getEmailFromLtiToken(token)
+  email = getEmailFromLtiToken(token),
+  institutionalIdClaim?: LtiInitOptions['institutionalIdClaim']
 ): NormalizedLaunch {
   const lis = getLisFromLti(res);
+  const custom = getCustom(res);
   return {
     version: '1.3',
     email,
@@ -284,9 +286,18 @@ function buildNormalizedLaunch(
     role,
     platformSubject: getSubjectFromLtiToken(token) || undefined,
     externalId: getExternalIdFromLti(res) || undefined,
+    institutionalIdentity: resolveInstitutionalIdentity(
+      institutionalIdClaim,
+      custom,
+      lis?.person_sourcedid
+    ),
     platform: buildPlatformContext(token, res),
     resourceLinkId: getResourceLinkId(res),
-    custom: stringCustom(res),
+    custom: Object.fromEntries(
+      Object.entries(custom)
+        .map(([key, value]) => [key, safeStr(value).trim()])
+        .filter(([, value]) => value)
+    ),
     contextSnapshot: buildLtiContextSnapshot(res),
     lis: {
       personSourcedId: safeStr(lis?.person_sourcedid).trim() || undefined,
@@ -499,7 +510,7 @@ export async function initLti(
       await captureAgsGradeLink(token, res);
 
       if (onNormalizedLaunch) {
-        const launch = buildNormalizedLaunch(token, res, ltiRole, email);
+        const launch = buildNormalizedLaunch(token, res, ltiRole, email, institutionalIdClaim);
         return onNormalizedLaunch(launch, {
           req,
           res,
@@ -515,7 +526,7 @@ export async function initLti(
       // delegate. Deep-linking-mode launches fall through to the binding
       // resolution below.
       if (isLoginOnly || isContextMapping) {
-        const launch = buildNormalizedLaunch(token, res, ltiRole, email);
+        const launch = buildNormalizedLaunch(token, res, ltiRole, email, institutionalIdClaim);
 
         const launchCtx: NormalizedLaunchContext = {
           mode: isLoginOnly ? 'login-only' : 'context-mapping',
@@ -922,14 +933,17 @@ export async function initLti(
                   ),
               })
             : undefined;
-          return onNormalizedLaunch(buildNormalizedLaunch(token, res, role, email), {
-            req,
-            res,
-            version: '1.3',
-            isDeepLinkingRequest: true,
-            deepLinking,
-            rawToken: token,
-          });
+          return onNormalizedLaunch(
+            buildNormalizedLaunch(token, res, role, email, institutionalIdClaim),
+            {
+              req,
+              res,
+              version: '1.3',
+              isDeepLinkingRequest: true,
+              deepLinking,
+              rawToken: token,
+            }
+          );
         }
 
         logInfo('[LTI] onDeepLinking — teacher configuring activity', {

@@ -166,7 +166,10 @@ function extractCustom(params: Record<string, string>): Record<string, string> {
   return out;
 }
 
-function mapToNormalizedLaunch(params: Record<string, string>): NormalizedLaunch {
+function mapToNormalizedLaunch(
+  params: Record<string, string>,
+  institutionalIdClaim?: LtiInitOptions['institutionalIdClaim']
+): NormalizedLaunch {
   const issuer = safeStr(params.tool_consumer_instance_guid) || safeStr(params.oauth_consumer_key);
   const clientId = safeStr(params.oauth_consumer_key);
   const contextId = safeStr(params.context_id);
@@ -175,6 +178,7 @@ function mapToNormalizedLaunch(params: Record<string, string>): NormalizedLaunch
     safeStr(params.lis_person_name_full) ||
     `${safeStr(params.lis_person_name_given)} ${safeStr(params.lis_person_name_family)}`.trim() ||
     email;
+  const custom = extractCustom(params);
   return {
     version: legacyVersion(params),
     email,
@@ -182,9 +186,14 @@ function mapToNormalizedLaunch(params: Record<string, string>): NormalizedLaunch
     role: inferRoleFromLegacyRoles(params.roles),
     platformSubject: safeStr(params.user_id) || undefined,
     externalId: safeStr(params.user_id) || undefined,
+    institutionalIdentity: resolveInstitutionalIdentity(
+      institutionalIdClaim,
+      custom,
+      params.lis_person_sourcedid
+    ),
     platform: { issuer, clientId, deploymentId: LTI_1P1_DEPLOYMENT_ID, contextId },
     resourceLinkId: safeStr(params.resource_link_id),
-    custom: extractCustom(params),
+    custom,
     contextSnapshot: buildLegacyContextSnapshot(params),
     lis: {
       personSourcedId: safeStr(params.lis_person_sourcedid) || undefined,
@@ -283,7 +292,7 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
     params: Record<string, string>,
     consumerKey: string
   ): Promise<unknown> {
-    const launch = mapToNormalizedLaunch(params);
+    const launch = mapToNormalizedLaunch(params, config.institutionalIdClaim);
     const frontend = getFrontendBaseUrl(req, config.frontendBaseUrl);
 
     // Capture the Basic Outcomes service link if the LMS enabled grading.
@@ -362,7 +371,7 @@ export function createLti11Router(config: Lti11RouterConfig): express.Router {
       return res.status(400).send(MSG_HTML('Missing content_item_return_url.'));
     }
 
-    const launch = mapToNormalizedLaunch(params);
+    const launch = mapToNormalizedLaunch(params, config.institutionalIdClaim);
     if (launch.role !== 'teacher') {
       return res.status(200).send(MSG_HTML('Only instructors can configure this activity.'));
     }

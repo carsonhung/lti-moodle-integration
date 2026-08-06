@@ -131,6 +131,8 @@ export interface NormalizedLaunch {
   /** Stable, platform-scoped LTI subject (`sub` for 1.3; `user_id` for legacy). */
   platformSubject?: string;
   externalId?: string;
+  /** Institutional identifier only when the configured LMS claim was verified. */
+  institutionalIdentity?: LtiInstitutionalIdentity;
   /** Platform tuple used to key course maps and resource bindings. */
   platform: LtiPlatformContext;
   resourceLinkId: string;

@@ -31,10 +31,14 @@ const context = {
     platform,
     platformId: serializePlatformId(platform),
   },
-  contextSnapshot: { contextId: 'course-1', identifierCandidates: ['COURSE101'] },
-  lis: { courseSectionSourcedId: 'COURSE101' },
-  custom: { course_id: 'COURSE101' },
-  courseHints: ['COURSE101'],
+  contextSnapshot: {
+    contextId: 'course-1',
+    label: 'TALIC001_2A_2026',
+    identifierCandidates: ['TALIC001_2A_2026'],
+  },
+  lis: { courseSectionSourcedId: 'TALIC001_2A_2026' },
+  custom: { course_id: 'TALIC001_2A_2026' },
+  courseHints: ['TALIC001_2A_2026'],
   resourceLinkId: 'resource-1',
 };
 
@@ -73,17 +77,17 @@ test('institutional identity is trusted only from configured provenance', () => 
 test('login-session hook can replace user and return safe serializable launch data', async () => {
   const result = await resolveLtiLoginSession(async (received) => {
     assert.equal(received.identity.platformSubject, 'subject-1');
-    assert.deepEqual(received.courseHints, ['COURSE101']);
+    assert.deepEqual(received.courseHints, ['TALIC001_2A_2026']);
     return {
       user: { ...received.user, id: 'linked-user' },
-      target: '/courses/COURSE101?source=lti',
-      launchMetadata: { courseCode: 'COURSE101', linked: true },
+      target: '/courses/TALIC001?source=lti',
+      launchMetadata: { courseCode: 'TALIC001', linked: true },
     };
   }, context);
 
   assert.equal(result.user.id, 'linked-user');
-  assert.equal(result.target, '/courses/COURSE101?source=lti');
-  assert.deepEqual(result.launchMetadata, { courseCode: 'COURSE101', linked: true });
+  assert.equal(result.target, '/courses/TALIC001?source=lti');
+  assert.deepEqual(result.launchMetadata, { courseCode: 'TALIC001', linked: true });
 });
 
 test('login-session hook rejects external targets and non-serializable metadata', async () => {

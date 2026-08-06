@@ -1,6 +1,6 @@
 {
   "name": "lti-moodle-integration",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Portable LTI 1.3 Provider module for Express + Vue 3 / React 18. Lets your app be launched from Moodle (or any LTI 1.3 LMS) with OIDC, Deep Linking, session bridging, and platform registration.",
   "keywords": [
     "lti",
@@ -54,10 +54,11 @@
     "NOTICE"
   ],
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p backend/tsconfig.json",
+    "typecheck": "tsc --noEmit -p backend/tsconfig.json",
     "clean": "node -e \"require('fs').rmSync('backend/dist',{recursive:true,force:true})\"",
     "test": "node --test \"backend/test/**/*.test.mjs\"",
     "pretest": "npm run build",
@@ -69,29 +70,42 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "ltijs": "^5.9.9",
+    "express": "^4.19.0",
+    "jose": "^5.10.0",
     "jsonwebtoken": "^9.0.2",
-    "express": "^4.19.0"
+    "ltijs": "^5.9.9"
   },
   "peerDependencies": {
     "axios": "^1.6.0",
-    "vue": "^3.4.0",
-    "vue-router": "^4.3.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
-    "react-router-dom": "^6.0.0"
+    "react-router-dom": "^6.0.0",
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0"
   },
   "peerDependenciesMeta": {
-    "axios": { "optional": true },
-    "vue": { "optional": true },
-    "vue-router": { "optional": true },
-    "react": { "optional": true },
-    "react-dom": { "optional": true },
-    "react-router-dom": { "optional": true }
+    "axios": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    },
+    "vue-router": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    },
+    "react-router-dom": {
+      "optional": true
+    }
   },
   "optionalDependencies": {
-    "mongoose": "^8.0.0",
     "drizzle-orm": "^0.30.0",
+    "mongoose": "^8.0.0",
     "pg": "^8.11.0"
   },
   "devDependencies": {
