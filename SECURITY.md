@@ -20,6 +20,19 @@ published with credit to you unless you prefer otherwise.
 Security fixes are made on the latest minor release. Upgrade to the newest
 version before reporting, where possible.
 
+## Hardening your deployment
+
+- **Rate limiting** is the host application's job. Put a limiter such as
+  [`express-rate-limit`](https://www.npmjs.com/package/express-rate-limit) (or
+  your reverse proxy's) in front of the mount path, especially the public
+  `/login`, `/launch`, and `/legacy/launch` routes and the `/session` bridges.
+- **Admin routers** (`createLtiAdminRouter`, `createLtiConsumerAdminRouter`)
+  must sit behind your admin authentication. The platform connection test makes
+  outbound requests to the URLs an admin enters (only `http`/`https`, no embedded
+  credentials), so don't expose it to untrusted users.
+- Replace the in-memory nonce, grade-link, and AGS sync stores with shared,
+  durable ones when you run more than one instance.
+
 ## Scope
 
 In scope: launch and token validation, OAuth 1.0a verification and replay

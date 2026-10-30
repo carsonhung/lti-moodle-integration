@@ -19,6 +19,12 @@ let ltiBase = '/api/v1/lti';
 let apiBase = '/api/v1';
 let legacyBase = '';
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+  return value.slice(0, end);
+}
+
 /**
  * Configure the API base paths once at app startup, before any LTI views
  * mount. Pass the same path you mounted ltijs under (the value of
@@ -30,9 +36,9 @@ export function configureLtiApi(options: {
   apiBase?: string;
   legacyBase?: string;
 }) {
-  if (options.ltiBase) ltiBase = options.ltiBase.replace(/\/+$/, '');
-  if (options.apiBase) apiBase = options.apiBase.replace(/\/+$/, '');
-  if (options.legacyBase) legacyBase = options.legacyBase.replace(/\/+$/, '');
+  if (options.ltiBase) ltiBase = trimTrailingSlashes(options.ltiBase);
+  if (options.apiBase) apiBase = trimTrailingSlashes(options.apiBase);
+  if (options.legacyBase) legacyBase = trimTrailingSlashes(options.legacyBase);
 }
 
 export function getLtiBase(): string {

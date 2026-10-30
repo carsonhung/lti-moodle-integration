@@ -88,6 +88,7 @@ import {
   getExternalIdFromLti,
   getLisFromLti,
   guessLmsCourseIdentifiers,
+  trimTrailingSlashes,
 } from './helpers';
 import { renderDeepLinkLauncher, renderTeacherManagePage } from './deepLinkingUI';
 
@@ -1682,7 +1683,7 @@ export async function initLti(
           const item: LtiDeepLinkItem = {
             type: 'ltiResourceLink',
             title: assignment.title,
-            url: `${toolBase}${mountPath}${appRoute}`.replace(/\/+$/g, ''),
+            url: trimTrailingSlashes(`${toolBase}${mountPath}${appRoute}`),
             custom: {
               [`${prefix}_course_id`]: course.id,
               [`${prefix}_assignment_id`]: assignment.id,
@@ -1748,7 +1749,7 @@ export async function initLti(
           });
 
           const toolBase = getToolBaseUrl(req, opts.toolBaseUrl);
-          const catLaunchUrl = `${toolBase}${mountPath}${appRoute}`.replace(/\/+$/g, '');
+          const catLaunchUrl = trimTrailingSlashes(`${toolBase}${mountPath}${appRoute}`);
 
           const catItem: LtiDeepLinkItem = {
             type: 'ltiResourceLink',
@@ -1857,7 +1858,7 @@ export async function initLti(
         });
 
         const toolBase = getToolBaseUrl(req, opts.toolBaseUrl);
-        const launchUrl = `${toolBase}${mountPath}${appRoute}`.replace(/\/+$/g, '');
+        const launchUrl = trimTrailingSlashes(`${toolBase}${mountPath}${appRoute}`);
 
         let items: LtiDeepLinkItem[];
         if (adapter.buildDeepLinkItems) {

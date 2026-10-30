@@ -10,6 +10,7 @@ import type {
   LtiPlatformContext,
   LtiRole,
 } from './types';
+import { trimTrailingSlashes } from './helpers';
 
 export const BROKER_LTIK_TOKEN_TYPE = 'broker.ltik' as const;
 export const BROKER_LTIK_CONTRACT_VERSION = '2' as const;
@@ -284,7 +285,7 @@ export async function verifyBrokerLtik(
 export function createBrokerLtikVerifier(
   options: CreateBrokerLtikVerifierOptions,
 ): (token: string) => Promise<VerifiedBrokerLtik> {
-  const issuer = options.issuer.replace(/\/+$/, '');
+  const issuer = trimTrailingSlashes(options.issuer);
   const jwksUrl = options.jwksUrl
     ? new URL(options.jwksUrl)
     : new URL(`${issuer}${BROKER_DEFAULT_JWKS_PATH}`);
@@ -306,7 +307,7 @@ export async function consumeBrokerLtik(
   token: string,
   options: ConsumeBrokerLtikOptions,
 ): Promise<void> {
-  const baseUrl = options.baseUrl.replace(/\/+$/, '');
+  const baseUrl = trimTrailingSlashes(options.baseUrl);
   const fetcher = options.fetch ?? globalThis.fetch;
   const response = await fetcher(`${baseUrl}${BROKER_LTIK_CONSUME_PATH}`, {
     method: 'POST',

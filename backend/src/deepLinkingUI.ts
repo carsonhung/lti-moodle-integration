@@ -9,7 +9,7 @@
  * optional pre-selection state. All user-supplied strings are HTML-escaped.
  */
 
-import { escapeHtml } from './helpers';
+import { escapeHtml, trimTrailingSlashes } from './helpers';
 
 export function renderDeepLinkPage(params: {
   title: string;
@@ -49,9 +49,7 @@ export function renderDeepLinkPage(params: {
     preselectedCourseId,
     error,
   } = params;
-  const safeFrontendBase = String(frontendBaseUrl ?? '')
-    .trim()
-    .replace(/\/+$/g, '');
+  const safeFrontendBase = trimTrailingSlashes(String(frontendBaseUrl ?? '').trim());
   const myCourseIds = new Set(courses.map((c) => String(c._id)));
 
   const safeLabel = escapeHtml(resourceLabel);

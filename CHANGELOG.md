@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-30
+
+### Security
+
+- Trailing-slash trimming no longer uses `/\/+$/`, which backtracks
+  quadratically; one call site ran on the request `Host` header.
+- The admin platform connection test only probes `http`/`https` URLs without
+  embedded credentials.
+- `drizzle-orm` optional dependency range raised to `^0.45.4` (SQL injection
+  fix), and the lockfile refreshed so development and CI use patched
+  `express`, `qs`, `body-parser`, `proxy-addr`, and `ip-address`.
+- The Mongoose example adapter generates placeholder passwords with
+  `crypto.randomBytes` instead of `Math.random`.
+- CI runs with read-only repository permissions. `SECURITY.md` gains
+  deployment hardening notes (rate limiting, admin routers, shared stores).
+
 ## [1.2.0] - 2026-10-30
 
 ### Fixed
@@ -160,5 +176,6 @@ Pre-release history; 1.2.0 is the first public release.
   adapters, and Vue 3 / React 18 frontend components sharing one
   framework-neutral `api.ts`.
 
-[Unreleased]: https://github.com/carsonhung/lti-moodle-integration/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/carsonhung/lti-moodle-integration/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/carsonhung/lti-moodle-integration/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/carsonhung/lti-moodle-integration/releases/tag/v1.2.0

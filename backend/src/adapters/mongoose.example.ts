@@ -16,6 +16,7 @@
  *   accounts created via your university SSO before the email matched.
  */
 
+import { randomBytes } from 'crypto';
 import jwt from 'jsonwebtoken';
 import type {
   LtiAdapter,
@@ -163,7 +164,7 @@ export const mongooseAdapter: LtiAdapter = {
     }
 
     if (!user) {
-      const randomPassword = Math.random().toString(36).slice(-10);
+      const randomPassword = randomBytes(24).toString('base64url');
       user = await User.create({
         name,
         email,

@@ -53,7 +53,7 @@ sequenceDiagram
 **1. Install**
 
 ```bash
-npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.2.0
+npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.2.1
 ```
 
 > Recent npm versions block install scripts from git dependencies, and this

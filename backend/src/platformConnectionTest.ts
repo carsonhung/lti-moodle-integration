@@ -52,10 +52,22 @@ async function fetchWithTimeout(
   init: RequestInit & { timeoutMs?: number } = {}
 ): Promise<Response> {
   const { timeoutMs = CONNECTION_TEST_TIMEOUT_MS, ...rest } = init;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('Not a valid URL.');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Only http(s) URLs can be tested.');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('URLs with embedded credentials cannot be tested.');
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...rest, signal: controller.signal });
+    return await fetch(parsed, { ...rest, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }

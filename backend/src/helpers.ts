@@ -167,17 +167,24 @@ export function getCustom(res: express.Response): Record<string, any> {
 
 // ─── URL Resolution ──────────────────────────────────────────────────────────
 
+/** Linear-time replacement for `.replace(/\/+$/, '')`, which backtracks quadratically. */
+export function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+  return value.slice(0, end);
+}
+
 export function getToolBaseUrl(req: express.Request, override?: string): string {
   const explicit = String(override ?? process.env.LTI_TOOL_BASE_URL ?? '').trim();
-  if (explicit) return explicit.replace(/\/+$/g, '');
+  if (explicit) return trimTrailingSlashes(explicit);
   const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
   const host = req.get('host') || 'localhost';
-  return `${proto}://${host}`.replace(/\/+$/g, '');
+  return trimTrailingSlashes(`${proto}://${host}`);
 }
 
 export function getFrontendBaseUrl(req: express.Request, override?: string): string {
   const explicit = String(override ?? process.env.LTI_FRONTEND_BASE_URL ?? '').trim();
-  if (explicit) return explicit.replace(/\/+$/g, '');
+  if (explicit) return trimTrailingSlashes(explicit);
   return getToolBaseUrl(req);
 }
 
