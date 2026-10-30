@@ -84,14 +84,19 @@ To move to the next project: copy this folder in unchanged, repeat steps 1–4. 
 
 **Option C — Install as a package (`npm install`).** The folder is now packaged so you can depend on it like any other module instead of copying source. The backend ships compiled (`backend/dist` with `.d.ts`); the frontend components ship as source under the `./frontend/*` subpath export and are resolved by your own bundler.
 
-Version 1.2.1 is released through its GitHub tag. The package is prepared for
-public npm publication but is not currently available from npm:
+Install it from npm:
+
+```bash
+npm install lti-moodle-integration
+```
+
+To track unreleased changes, you can install from a git tag or commit instead:
 
 ```bash
 npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.2.1
 ```
 
-> Installing from git runs the `prepare` script, which npm executes **after** installing the package's dev dependencies — so `tsc` is available and `backend/dist` is compiled automatically on the consumer's machine. Always pin a tag or commit; without one npm installs the default branch HEAD.
+> A git install compiles `backend/dist` in the package's `prepare` script. Recent npm versions block install scripts from git dependencies; if `backend/dist` is missing afterwards, run `npm approve-scripts lti-moodle-integration` and reinstall. Always pin a tag or commit; without one npm installs the default branch HEAD.
 
 Then consume the published entry points instead of relative paths:
 

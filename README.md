@@ -1,5 +1,6 @@
 # lti-moodle-integration
 
+[![npm](https://img.shields.io/npm/v/lti-moodle-integration.svg)](https://www.npmjs.com/package/lti-moodle-integration)
 [![CI](https://github.com/carsonhung/lti-moodle-integration/actions/workflows/ci.yml/badge.svg)](https://github.com/carsonhung/lti-moodle-integration/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Node >= 22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)
@@ -53,13 +54,12 @@ sequenceDiagram
 **1. Install**
 
 ```bash
-npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.2.1
+npm install lti-moodle-integration
 ```
 
-> Recent npm versions block install scripts from git dependencies, and this
-> package compiles itself in `prepare`. If `node_modules/lti-moodle-integration/backend/dist`
-> is missing after install, run `npm approve-scripts lti-moodle-integration` and
-> reinstall. Always pin a tag or commit.
+The backend ships compiled with type definitions; the Vue and React components
+ship as source for your bundler. Other ways to use it (copying the source in, or
+installing from a git tag) are in [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 **2. Implement an adapter and mount the routes**
 
