@@ -1,0 +1,138 @@
+{
+  "name": "lti-moodle-integration",
+  "version": "1.2.0",
+  "description": "LTI 1.3 tool provider for Express with Vue 3 / React 18 UI: Moodle (or any LMS) launch to app session, Deep Linking, and AGS grade passback.",
+  "keywords": [
+    "lti",
+    "lti-1.3",
+    "lti-advantage",
+    "lti-provider",
+    "lti-tool",
+    "moodle",
+    "canvas",
+    "brightspace",
+    "blackboard",
+    "lms",
+    "ltijs",
+    "deep-linking",
+    "ags",
+    "grade-passback",
+    "oidc",
+    "sso",
+    "express",
+    "vue",
+    "react",
+    "typescript",
+    "edtech",
+    "education"
+  ],
+  "author": "Dr. Carson Hung",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carsonhung/lti-moodle-integration.git"
+  },
+  "bugs": {
+    "url": "https://github.com/carsonhung/lti-moodle-integration/issues"
+  },
+  "homepage": "https://github.com/carsonhung/lti-moodle-integration#readme",
+  "main": "./backend/dist/index.js",
+  "types": "./backend/dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./backend/dist/index.d.ts",
+      "default": "./backend/dist/index.js"
+    },
+    "./backend": {
+      "types": "./backend/dist/index.d.ts",
+      "default": "./backend/dist/index.js"
+    },
+    "./frontend/*": "./frontend/*",
+    "./package.json": "./package.json",
+    "./.env.example": "./.env.example"
+  },
+  "files": [
+    "backend/dist",
+    "backend/src",
+    "backend/package.json",
+    "backend/tsconfig.json",
+    "frontend/src",
+    "docs",
+    ".env.example",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p backend/tsconfig.json",
+    "typecheck": "tsc --noEmit -p backend/tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('backend/dist',{recursive:true,force:true})\"",
+    "test": "node --test \"backend/test/**/*.test.mjs\"",
+    "pretest": "npm run build",
+    "test:packaging": "node --test \"backend/test/**/*.itest.mjs\"",
+    "pretest:packaging": "npm run build",
+    "prepare": "npm run clean && npm run build"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "jose": "^5.10.0",
+    "jsonwebtoken": "^9.0.2",
+    "ltijs": "^5.9.9"
+  },
+  "peerDependencies": {
+    "axios": "^1.6.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "react-router-dom": "^6.0.0",
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0"
+  },
+  "peerDependenciesMeta": {
+    "axios": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    },
+    "vue-router": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    },
+    "react-router-dom": {
+      "optional": true
+    }
+  },
+  "optionalDependencies": {
+    "drizzle-orm": "^0.30.0",
+    "mongoose": "^8.0.0",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0"
+  },
+  "notes": {
+    "ltijs": "REQUIRED. The LTI 1.3 Provider engine. Stores its own platform/nonce state in MongoDB (LTI_DB_URL).",
+    "jsonwebtoken": "REQUIRED. Used by the example adapters' generateJwt() to mint app-session JWTs. If your project already has its own JWT helper, you can drop this.",
+    "express": "REQUIRED (in the host app). Listed here as a hard dep so the types match. The standalone module's API surface uses Express 4 types; hosts on Express 5 bridge the gap with a one-line cast at the integration boundary.",
+    "mongoose": "OPTIONAL. Only needed if you use the Mongoose adapter / Mongoose models.",
+    "drizzle-orm": "OPTIONAL. Only needed if you use the Drizzle adapter.",
+    "pg": "OPTIONAL. Postgres driver — only needed with Drizzle adapter (or other raw-SQL setup).",
+    "vue / vue-router / axios": "OPTIONAL peer deps for the frontend bits. Required only if you copy the Vue components (frontend/src/views/) into your frontend project.",
+    "react / react-dom / react-router-dom": "OPTIONAL peer deps for the React frontend bits (frontend/src/react/). Required only if you copy the React components instead of the Vue ones. Install only the framework you actually use — the other one's peers stay unmet without npm errors."
+  }
+}

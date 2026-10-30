@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/carsonhung/lti-moodle-integration/security/advisories/new
+    about: Please report vulnerabilities privately, not as public issues.
+  - name: Moodle external tool setup guide
+    url: https://github.com/carsonhung/lti-moodle-integration/blob/main/docs/MOODLE_SETUP.md
+    about: Step-by-step Moodle configuration — many launch problems are solved here.

@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in the module doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please redact tokens, emails, client secrets, and consumer secrets from anything you paste.
+        Security vulnerabilities go through SECURITY.md, not public issues.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Module version or commit
+      placeholder: v1.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: lti
+    attributes:
+      label: LTI version
+      options:
+        - LTI 1.3
+        - LTI 1.1 / 1.0a
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Connect mode
+      options:
+        - login-only
+        - context-mapping
+        - deep-linking
+        - Not sure
+  - type: input
+    id: lms
+    attributes:
+      label: LMS and version
+      placeholder: Moodle 4.5.2
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant `[LTI]` log lines
+      render: text
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup details
+      description: Node version, database (Mongo / SQL plugin), frontend (Vue / React), and any non-default `initLti` options.
