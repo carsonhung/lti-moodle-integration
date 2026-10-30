@@ -38,6 +38,43 @@ the application layer on top, and that is what this package provides:
 Your database and auth stay yours. The package talks to them only through one
 adapter interface that you implement.
 
+### How the pieces fit together
+
+```mermaid
+flowchart LR
+    subgraph LMS["LMS (Moodle, Canvas, …)"]
+        M["Course activity<br/>and gradebook"]
+    end
+
+    subgraph Backend["Your Express backend"]
+        direction TB
+        L["ltijs<br/>(protocol: OIDC, signatures, keys)"]
+        C["lti-moodle-integration core<br/>(launch handling, session bridge,<br/>deep linking, grade sync)"]
+        A["Your adapter"]
+        L --> C
+        C --> A
+    end
+
+    subgraph Yours["Already yours"]
+        DB[("Your database")]
+        AUTH["Your JWT / auth"]
+    end
+
+    subgraph Frontend["Your SPA (Vue 3 or React 18)"]
+        V["Provided screens:<br/>launch, deep-link picker,<br/>platform admin"]
+    end
+
+    M <-->|"LTI launch,<br/>deep link, scores"| L
+    A --> DB
+    A --> AUTH
+    C <-->|"ltik → app JWT"| V
+```
+
+Moodle only ever talks to `ltijs`. `ltijs` hands each verified launch to this
+package's core, and the core calls **your adapter** whenever it needs something
+from your database or auth. Your frontend uses the provided screens, which talk
+only to the core.
+
 ## Key terms
 
 If you're new to LTI, these words come up throughout the docs:
@@ -78,6 +115,20 @@ move to a richer mode later. Only `deep-linking` needs an extra Moodle setting
 | `context-mapping` | The Moodle course is linked to a course in your app. Teachers manage content in your app; students pick what to open. No Deep Linking needed. | Full `LtiAdapter`. |
 | `deep-linking` | When adding the activity, the teacher picks the exact content (or a graded assignment) in your app's picker. Each activity then opens that content directly. | Full `LtiAdapter` + the deep-link screen. |
 
+```mermaid
+flowchart TD
+    Q1{"Do you only need users<br/>to arrive signed in?"}
+    Q1 -->|Yes| LO["login-only<br/>3-method adapter"]
+    Q1 -->|"No — activities should open<br/>specific content"| Q2{"Does your Moodle show<br/>'Select content' (Deep Linking)<br/>when adding an external tool?"}
+    Q2 -->|"No, or not sure"| CM["context-mapping<br/>Moodle course → your course;<br/>teachers bind activities inside your app"]
+    Q2 -->|Yes| Q3{"Should teachers pick content<br/>or graded assignments<br/>inside Moodle?"}
+    Q3 -->|Yes| DL["deep-linking<br/>teacher picks content in your picker"]
+    Q3 -->|"No, managing in your app is fine"| CM
+```
+
+Many institutional Moodle sites turn Deep Linking off, which is why
+`context-mapping` is the safe choice when you need more than sign-in.
+
 ## How a launch works
 
 ```mermaid
@@ -110,6 +161,36 @@ In plain terms:
    the user.
 5. From here the SPA behaves exactly as if the user had logged in normally. LTI
    isn't involved again until the next launch, or until you send a grade.
+
+### How a teacher sets up an activity (`deep-linking` mode)
+
+This happens once per activity, when the teacher adds your tool to a course and
+clicks **Select content**:
+
+```mermaid
+sequenceDiagram
+    participant Te as Teacher
+    participant M as Moodle
+    participant T as Your backend
+    participant S as Your SPA (deep-link picker)
+    Te->>M: Add external tool → "Select content"
+    M->>T: Deep Linking launch (signed id_token)
+    T->>S: Redirect to /lti/deeplink?ltik=…
+    S->>T: Load courses and content (via your adapter)
+    Te->>S: Pick a course + resource, category, or graded assignment
+    S->>T: Submit selection
+    T->>T: Save the binding, sign a deep-link response
+    T->>S: Signed response + Moodle return URL
+    S->>M: Post the response back to Moodle
+    M->>M: Save the activity (and create a grade column for graded assignments)
+    Note over M,S: From now on, every launch of this activity opens the chosen content
+```
+
+In `context-mapping` mode there is no picker inside Moodle. Instead, the first
+time a teacher opens an activity, your app asks which content it should point to,
+and saves that choice for later launches. See
+[Architecture](docs/ARCHITECTURE.md#context-mapping-with-per-link-grouping-binding)
+for that flow.
 
 ## Quick start
 
@@ -252,6 +333,28 @@ await sendScore({
   scorePolicy: 'highest',          // keep the student's best score
 });
 ```
+
+What happens behind that call:
+
+```mermaid
+flowchart TD
+    A["Student launches the activity"] --> B["Grade target recorded<br/>(AGS endpoint or 1.1 outcomes URL)"]
+    B --> C["Student completes work in your app"]
+    C --> D["Your code calls sendScore()"]
+    D --> E{"Which LTI version<br/>was the launch?"}
+    E -->|"1.1"| F["Basic Outcomes<br/>signed replaceResult"]
+    E -->|"1.3"| G["Durable sync record per student + activity<br/>apply score policy: latest / first / highest"]
+    G --> H["Publish score to Moodle (AGS)"]
+    H -->|"Success"| OK["Score in the Moodle gradebook"]
+    F --> OK
+    H -->|"404: grade column missing"| R["Find the column by tag, or create it,<br/>rescale the score, try again"]
+    R --> H
+    H -->|"Temporary failure"| RT["Retry, up to 5 attempts by default;<br/>retryAgsScore(syncId) re-runs a failed sync"]
+    RT --> H
+```
+
+The grade target is captured **at launch**, so a student must have opened the
+activity from Moodle at least once before you can send them a score.
 
 AGS must be switched on in both places: set `LTI_AGS_ENABLED=true`, and in
 Moodle set the tool's "IMS LTI Assignment and Grade Services" option to grade
