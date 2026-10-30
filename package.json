@@ -115,7 +115,7 @@
     }
   },
   "optionalDependencies": {
-    "drizzle-orm": "^0.30.0",
+    "drizzle-orm": "^0.45.4",
     "mongoose": "^8.0.0",
     "pg": "^8.11.0"
   },
