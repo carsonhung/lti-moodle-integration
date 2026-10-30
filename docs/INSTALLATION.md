@@ -93,7 +93,7 @@ npm install lti-moodle-integration
 To track unreleased changes, you can install from a git tag or commit instead:
 
 ```bash
-npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.2.1
+npm install git+https://github.com/carsonhung/lti-moodle-integration.git#v1.3.0
 ```
 
 > A git install compiles `backend/dist` in the package's `prepare` script. Recent npm versions block install scripts from git dependencies; if `backend/dist` is missing afterwards, run `npm approve-scripts lti-moodle-integration` and reinstall. Always pin a tag or commit; without one npm installs the default branch HEAD.

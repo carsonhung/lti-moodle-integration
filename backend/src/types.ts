@@ -97,13 +97,23 @@ export interface LtiAssignment {
   /** ISO-8601 availability window forwarded to the LMS. */
   availableFrom?: string;
   availableUntil?: string;
-  source?: 'course' | 'other';
+  /** `general`: not tied to one course (e.g. placed through a shared category). */
+  source?: 'course' | 'general' | 'other';
+  scorePolicy?: LtiAgsScorePolicy;
+  /**
+   * Line-item `tag` sent with the deep link. Defaults to
+   * `<customFieldPrefix>:assignment:<id>`; override to keep matching columns
+   * created by an earlier integration.
+   */
+  lineItemTag?: string;
 }
 
 export interface LtiCategory {
   id: string;
   name: string;
   description?: string;
+  iconUrl?: string;
+  backgroundUrl?: string;
   agentCount: number;
   isCourseStudentAgents: boolean;
   courseId?: string;
@@ -211,6 +221,19 @@ export interface LtiUserUpsertParams {
   institutionalIdSource?: LtiInstitutionalIdentity['source'];
 }
 
+/** Where the `/session` bridge found the tenant it embeds in the app JWT. */
+export type LtiTenantSource = 'binding' | 'agent-backfill' | 'default' | 'none';
+
+/** AGS endpoint claims of a 1.3 launch, for hosts that keep their own grade sync. */
+export interface LtiAgsLaunchClaims {
+  /** LTI `sub` that scores must be posted for. */
+  lmsUserId: string;
+  lineItem?: string;
+  /** Derived from `lineItem` when the platform omits it. */
+  lineItems?: string;
+  scopes: string[];
+}
+
 export interface LtiLoginSessionContext {
   version: LtiLaunchVersion;
   role: LtiRole;
@@ -222,6 +245,23 @@ export interface LtiLoginSessionContext {
   courseHints: string[];
   resourceLinkId: string;
   tenant?: string;
+  /** 1.3 only. Resource-link binding of the launched activity, when one exists. */
+  binding?: LtiResourceBinding;
+  /** 1.3 only. */
+  tenantSource?: LtiTenantSource;
+  /** 1.3 only. Present when the launch carries an AGS endpoint claim. */
+  ags?: LtiAgsLaunchClaims;
+  /** 1.3 only. A teacher is opening the activity as a student (`learnerPreview`). */
+  preview?: boolean;
+}
+
+/** Options for {@link LtiAdapter.generateJwt}. */
+export interface LtiJwtOptions {
+  /**
+   * Set when a teacher previews an activity as a student (`learnerPreview`).
+   * The host should issue a token that acts as a student in `tenantId` only.
+   */
+  preview?: { role: 'student'; tenantId: string };
 }
 
 export interface LtiLoginSessionResolution {
@@ -564,7 +604,7 @@ export interface LtiLoginOnlyAdapter {
 
   upsertUser(params: LtiUserUpsertParams): Promise<LtiUser>;
 
-  generateJwt(user: LtiUser): { token: string; expiresIn: number };
+  generateJwt(user: LtiUser, options?: LtiJwtOptions): { token: string; expiresIn: number };
 
   /**
    * Single-tenant apps return `undefined`. Multi-tenant apps return the
@@ -579,6 +619,8 @@ export interface LtiAdapter {
   readonly deepLinkPageTitle: string;
   readonly resourceLabel: string;
   readonly customFieldPrefix: string;
+  /** Name of an assignment binding on the teacher manage page. Default "Graded Assignment". */
+  readonly assignmentLabel?: string;
 
   // ── User Resolution ────────────────────────────────────────────────────
 
@@ -593,7 +635,7 @@ export interface LtiAdapter {
 
   upsertUser(params: LtiUserUpsertParams): Promise<LtiUser>;
 
-  generateJwt(user: LtiUser): { token: string; expiresIn: number };
+  generateJwt(user: LtiUser, options?: LtiJwtOptions): { token: string; expiresIn: number };
 
   // ── Course Operations ──────────────────────────────────────────────────
 
@@ -731,9 +773,19 @@ export interface LtiAdapter {
    */
   getTenantMode?(): LtiTenantMode | undefined;
 
+  /**
+   * Optional: extra JSON fields merged into each course of the deep-link
+   * picker data (`/deeplink/data`). `suggested` is true for courses matched by
+   * LMS identifiers that the teacher does not teach yet.
+   */
+  extendPickerCourse?(
+    course: LtiCourse,
+    ctx: { teacher: LtiUser; suggested: boolean }
+  ): LtiJsonObject | undefined;
+
   // ── Optional: Resource Lookup ───────────────────────────────────────
 
-  getResourceById?(resourceId: string): Promise<LtiResource | null>;
+  getResourceById?(resourceId: string, tenantId?: string): Promise<LtiResource | null>;
 
   // ── Optional: Deep Link Item Enrichment ────────────────────────────────
 
@@ -840,7 +892,52 @@ export interface LtiInitOptions {
    * teachers are sent to the built-in `/launch/manage` page.
    */
   teacherLaunchUrl?: string;
+  /**
+   * Where a teacher lands when launching an activity placed by Deep Linking
+   * (its custom params already name the content).
+   * - `manage` (default): the `/launch/manage` page.
+   * - `content`: the content itself, like a student. Activities added without
+   *   Deep Linking still open the manage page.
+   */
+  teacherDeepLinkedLaunch?: 'manage' | 'content';
+  /**
+   * Allow `/session?preview=student` so a teacher can open the activity as a
+   * student. The core requires the teacher LTI role and a tenant from the
+   * activity binding, then calls `generateJwt(user, { preview })` and returns
+   * `previewRole: 'student'`. Manage-page preview links carry `preview=student`.
+   * Default `false` (env `LTI_LEARNER_PREVIEW`).
+   */
+  learnerPreview?: boolean;
   autoMapCourse?: boolean;
+  /**
+   * Which courses deep-linking auto-mapping may match from LMS identifiers.
+   * - `any` (default): any course; the teacher is attached to it.
+   * - `teacher`: only courses the teacher already teaches (admins: any). The
+   *   teacher is never attached to a mapped course they do not teach.
+   */
+  autoMapScope?: 'any' | 'teacher';
+  /**
+   * In multi-tenant mode (`adapter.getTenantMode() === 'multi'`), skip
+   * auto-mapping for admins and report `tenantSelectionRequired` so the picker
+   * asks which tenant's course to use. Default `false`.
+   */
+  requireAdminTenantSelection?: boolean;
+  /**
+   * Whether browsing a suggested course in the picker (agents / categories /
+   * assignments lists) attaches the teacher to it. Submitting a selection always
+   * attaches. Default `true`.
+   */
+  attachTeacherOnBrowse?: boolean;
+  /**
+   * Maximum courses suggested from LMS identifiers, and the allow-list size for
+   * picking a course the teacher does not teach. Defaults: 8 suggested, 12 allowed.
+   */
+  courseSuggestionLimit?: number;
+  /**
+   * Grant a teacher access to the activity's tenant on `/session` when the
+   * tenant came from the binding. Default `true`.
+   */
+  grantTeacherTenantOnSession?: boolean;
   autoEnrollStudents?: boolean;
   toolBaseUrl?: string;
   frontendBaseUrl?: string;

@@ -6,6 +6,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-30
+
+### Security
+
+- `GET /category/:categoryId/agents` now requires the launch's resource-link
+  binding to be a category binding for that `categoryId` (403 otherwise).
+  Previously any valid `ltik` could list any category's agents.
+
+### Added
+
+- **Student preview** (`learnerPreview` / `LTI_LEARNER_PREVIEW`):
+  `/session?preview=student` lets a teacher open the activity as a student. It
+  requires the teacher LTI role (403) and a tenant from the activity binding
+  (400), calls `generateJwt(user, { preview: { role: 'student', tenantId } })`,
+  and returns `previewRole: 'student'`. Manage-page preview links carry
+  `preview=student`.
+- `resolveLoginSession` context gains `binding`, `tenantSource`, `ags`
+  (`lmsUserId`, `lineItem`, `lineItems`, `scopes`) and `preview`, so hosts with
+  their own grade sync can record the launch's AGS endpoint.
+- `/session` returns `tenantMode` when the adapter reports one.
+- `teacherDeepLinkedLaunch: 'content'` opens a deep-linked activity's content
+  for teachers instead of the manage page.
+- `autoMapScope: 'teacher'` limits deep-linking auto-mapping to courses the
+  teacher already teaches (admins: any), and never attaches the teacher to a
+  mapped course they do not teach.
+- `requireAdminTenantSelection`: multi-tenant admins skip auto-mapping and the
+  picker data reports `tenantSelectionRequired`.
+- `attachTeacherOnBrowse: false` stops the picker's course lists from attaching
+  the teacher to a suggested course (submitting still attaches).
+- `courseSuggestionLimit` and `grantTeacherTenantOnSession` options.
+- Adapter: optional `assignmentLabel`, `extendPickerCourse()` (extra fields per
+  picker course), and a `tenantId` argument to `getResourceById`.
+- `LtiAssignment`: `source: 'general'`, `scorePolicy`, and `lineItemTag` to keep
+  an existing line-item tag format. `LtiCategory`: `iconUrl`, `backgroundUrl`.
+- `/deeplink/data` returns `isAdmin`, `tenantSelectionRequired` and
+  `mappedTenantId`. `/deeplink/course/:id/assignments` passes adapter fields
+  through and includes `id` alongside `_id`.
+- `ltiHelpers.hasLearnerRoleFromLti()`.
+
+### Changed
+
+- `/session` auto-enrolls users holding the Learner role even when a teacher
+  role wins, and looks courses up in the binding's or course map's tenant.
+- `/deeplink/data` no longer suggests courses the teacher can already see,
+  and only preselects the mapped course when the teacher can see it.
+- Tenant is passed to category, course and resource lookups on deep-link
+  submit and the manage page, and course maps keep their tenant.
+
 ## [1.2.1] - 2026-10-30
 
 ### Security

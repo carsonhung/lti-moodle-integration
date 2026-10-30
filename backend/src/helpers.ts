@@ -190,7 +190,7 @@ export function getFrontendBaseUrl(req: express.Request, override?: string): str
 
 // ─── Role Inference ──────────────────────────────────────────────────────────
 
-export function inferRoleFromLti(res: express.Response): LtiRole {
+function getLtiRoles(res: express.Response): string[] {
   const ctx: any = res.locals?.context;
   const token: any = res.locals?.token;
   const rolesRaw =
@@ -198,10 +198,19 @@ export function inferRoleFromLti(res: express.Response): LtiRole {
     token?.platformContext?.roles ??
     token?.[LTI_ROLES_CLAIM] ??
     token?.platformContext?.[LTI_ROLES_CLAIM];
-  const roles: string[] = Array.isArray(rolesRaw)
-    ? (rolesRaw as any[]).map((r) => String(r ?? ''))
-    : [];
-  const joined = roles.join(' ').toLowerCase();
+  return Array.isArray(rolesRaw) ? (rolesRaw as any[]).map((r) => String(r ?? '')) : [];
+}
+
+/**
+ * True when the launch carries a Learner role, even if a teacher role wins in
+ * {@link inferRoleFromLti} (Moodle users who both teach and study).
+ */
+export function hasLearnerRoleFromLti(res: express.Response): boolean {
+  return getLtiRoles(res).some((role) => /(^|[#/])learner$/i.test(role.trim()));
+}
+
+export function inferRoleFromLti(res: express.Response): LtiRole {
+  const joined = getLtiRoles(res).join(' ').toLowerCase();
   // Treat the common LIS/Moodle instructor-equivalent roles as teacher. Moodle
   // maps "Teacher" -> Instructor and "Non-editing teacher" -> Instructor (often
   // with a TeachingAssistant sub-role); ContentDeveloper/Manager also manage a

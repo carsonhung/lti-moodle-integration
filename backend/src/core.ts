@@ -24,6 +24,8 @@ import type {
   LtiGradeLinkStore,
   LtiPlatformContext,
   LtiResourceBinding,
+  LtiTenantSource,
+  LtiAgsLaunchClaims,
 } from './types';
 import { logInfo, logWarn, logError } from './logger';
 import {
@@ -85,6 +87,7 @@ import {
   getToolBaseUrl,
   getFrontendBaseUrl,
   inferRoleFromLti,
+  hasLearnerRoleFromLti,
   getExternalIdFromLti,
   getLisFromLti,
   guessLmsCourseIdentifiers,
@@ -422,6 +425,14 @@ export async function initLti(
       .toLowerCase() === 'true';
   const autoEnrollStudents =
     opts.autoEnrollStudents ?? truthy(process.env.LTI_AUTO_ENROLL_STUDENTS);
+  const learnerPreview = opts.learnerPreview ?? truthy(process.env.LTI_LEARNER_PREVIEW);
+  const teacherDeepLinkedLaunch = opts.teacherDeepLinkedLaunch ?? 'manage';
+  const autoMapScope = opts.autoMapScope ?? 'any';
+  const requireAdminTenantSelection = opts.requireAdminTenantSelection ?? false;
+  const attachTeacherOnBrowse = opts.attachTeacherOnBrowse ?? true;
+  const grantTeacherTenantOnSession = opts.grantTeacherTenantOnSession ?? true;
+  const suggestedCourseLimit = opts.courseSuggestionLimit ?? 8;
+  const allowedCourseLimit = opts.courseSuggestionLimit ?? 12;
 
   const prefix = adapter.customFieldPrefix;
   const launchRedirectPath = (opts.loginOnlyLaunchPath ?? '/lti/launch').trim() || '/lti/launch';
@@ -733,7 +744,8 @@ export async function initLti(
         resolvedFrom: deepLink.configured ? 'deeplink' : binding ? 'binding' : 'none',
       });
 
-      if (ltiRole === 'teacher') {
+      const teacherOpensContent = teacherDeepLinkedLaunch === 'content' && deepLink.configured;
+      if (ltiRole === 'teacher' && !teacherOpensContent) {
         if (opts.teacherLaunchUrl && resolvedResourceId && resolvedCourseId) {
           const teacherUrl = opts.teacherLaunchUrl
             .replace('{courseId}', encodeURIComponent(resolvedCourseId))
@@ -766,8 +778,9 @@ export async function initLti(
           );
       }
 
-      logInfo('[LTI] onConnect — student redirect', {
+      logInfo('[LTI] onConnect — redirect to content', {
         email,
+        role: ltiRole,
         target,
         bindingType: selection.bindingType || '(none)',
         courseId: resolvedCourseId,
@@ -819,6 +832,15 @@ export async function initLti(
         getCustom(res),
         getLisFromLti(res)?.person_sourcedid
       );
+      const previewRequested =
+        learnerPreview && String(req.query?.preview ?? '').trim() === 'student';
+
+      if (previewRequested && role !== 'teacher') {
+        return res.status(403).json({
+          success: false,
+          message: 'Student preview is only available from an instructor LTI launch.',
+        });
+      }
 
       logInfo('[LTI] /session — bridge request', {
         role,
@@ -826,6 +848,7 @@ export async function initLti(
         hasPlatformSubject: !!platformSubject,
         hasExternalId: !!externalId,
         institutionalIdSource: institutionalIdentity?.source ?? '(none)',
+        preview: previewRequested,
       });
 
       let user = await loginAdapter.upsertUser({
@@ -841,59 +864,68 @@ export async function initLti(
         institutionalIdSource: institutionalIdentity?.source,
       });
 
+      const resourceLinkId = getResourceLinkId(res);
+      const hasBindingKey = !!(
+        platform.issuer &&
+        platform.clientId &&
+        platform.deploymentId &&
+        platform.contextId &&
+        resourceLinkId
+      );
+      const binding =
+        resolvesCourse && hasBindingKey
+          ? await fullAdapter.findResourceBinding({ ...platform, resourceLinkId })
+          : null;
+
+      const agsEndpoint =
+        extractAgsEndpoint(token) ?? extractAgsEndpoint({ platformContext: res.locals?.context });
+      const agsClaims: LtiAgsLaunchClaims | undefined =
+        agsEndpoint && platformSubject
+          ? {
+              lmsUserId: platformSubject,
+              lineItem: agsEndpoint.lineItem,
+              lineItems: agsEndpoint.lineItems,
+              scopes: agsEndpoint.scopes,
+            }
+          : undefined;
+
       // Moodle often omits Learner for users who also teach; a launch carrying a
       // line item and the score scope still expects a grade for this user.
-      const agsGradebookLaunch = agsEnabled && isAgsGradebookLaunch(extractAgsEndpoint(token));
-      if (resolvesCourse && autoEnrollStudents && (role === 'student' || agsGradebookLaunch)) {
+      const agsGradebookLaunch = agsEnabled && isAgsGradebookLaunch(agsEndpoint);
+      const learnerLaunch = role === 'student' || hasLearnerRoleFromLti(res);
+      if (resolvesCourse && autoEnrollStudents && (learnerLaunch || agsGradebookLaunch)) {
         const custom = getCustom(res);
-        const issuer = getIssuerFromLtiToken(token);
-        const clientId = getClientIdFromLtiToken(token);
-        const deploymentId = getDeploymentIdFromLtiToken(token);
-        const contextId = getContextId(res);
-        const resourceLinkId = getResourceLinkId(res);
 
         let courseId = safeStr(
           custom?.[`${prefix}_course_id`] || custom?.courseId
         ).trim();
+        let courseTenant: string | undefined =
+          binding && binding.courseId === courseId ? binding.tenantId : undefined;
         let courseIdSource: string = courseId ? 'custom' : 'none';
 
-        if (!courseId && issuer && clientId && deploymentId && contextId) {
-          const mapped = await fullAdapter.findCourseMap({
-            issuer,
-            clientId,
-            deploymentId,
-            contextId,
-          });
+        if (!courseId && platform.issuer && platform.clientId && platform.deploymentId && platform.contextId) {
+          const mapped = await fullAdapter.findCourseMap(platform);
           if (mapped) {
             courseId = mapped.courseId;
+            courseTenant = mapped.tenantId;
             courseIdSource = 'courseMap';
           }
         }
-        if (!courseId && issuer && clientId && deploymentId && contextId && resourceLinkId) {
-          const binding = await fullAdapter.findResourceBinding({
-            issuer,
-            clientId,
-            deploymentId,
-            contextId,
-            resourceLinkId,
-          });
-          if (binding) {
-            courseId = binding.courseId;
-            courseIdSource = 'binding';
-          }
+        if (!courseId && binding) {
+          courseId = binding.courseId;
+          courseTenant = binding.tenantId;
+          courseIdSource = 'binding';
         }
 
         if (!courseId) {
           logWarn('[LTI] Auto-enroll enabled but no course mapping found for learner launch', {
-            issuer,
-            clientId,
-            deploymentId,
-            contextId,
+            ...platform,
             resourceLinkId,
+            agsGradebookLaunch,
           });
         } else {
           try {
-            const course = await fullAdapter.getCourseById(courseId);
+            const course = await fullAdapter.getCourseById(courseId, courseTenant);
             if (!course) {
               logWarn('[LTI] Auto-enroll: course not found', { courseId, courseIdSource });
             } else {
@@ -903,6 +935,7 @@ export async function initLti(
                 courseId,
                 courseIdSource,
                 agsGradebookLaunch,
+                learner: hasLearnerRoleFromLti(res),
               });
             }
           } catch (e: any) {
@@ -916,36 +949,22 @@ export async function initLti(
       }
 
       let tenant: string | undefined;
-      let tenantSource: 'binding' | 'agent-backfill' | 'default' | 'none' = 'none';
+      let tenantSource: LtiTenantSource = 'none';
 
-      if (!skipDeepLinking) {
-        const issuer = getIssuerFromLtiToken(token);
-        const clientId = getClientIdFromLtiToken(token);
-        const deploymentId = getDeploymentIdFromLtiToken(token);
-        const contextId = getContextId(res);
-        const resourceLinkId = getResourceLinkId(res);
-
-        if (issuer && clientId && deploymentId && contextId && resourceLinkId) {
-          const binding = await fullAdapter.findResourceBinding({
-            issuer,
-            clientId,
-            deploymentId,
-            contextId,
-            resourceLinkId,
-          });
-
-          if (binding?.tenantId) {
-            tenant = binding.tenantId;
-            tenantSource = 'binding';
-          } else if (binding) {
-            const resolved = await fullAdapter.resolveTenantFromBinding(binding);
-            if (resolved) {
-              tenant = resolved;
-              tenantSource = 'agent-backfill';
-            }
+      if (!skipDeepLinking && binding) {
+        if (binding.tenantId) {
+          tenant = binding.tenantId;
+          tenantSource = 'binding';
+        } else {
+          const resolved = await fullAdapter.resolveTenantFromBinding(binding);
+          if (resolved) {
+            tenant = resolved;
+            tenantSource = 'agent-backfill';
           }
         }
       }
+      const bindingTenant =
+        tenantSource === 'binding' || tenantSource === 'agent-backfill' ? tenant : undefined;
 
       if (!tenant) {
         const fallback = loginAdapter.resolveEffectiveTenant();
@@ -961,16 +980,24 @@ export async function initLti(
         userId: user.id,
         email,
         role,
+        learner: hasLearnerRoleFromLti(res),
+        agsGradebookLaunch,
       });
 
+      if (previewRequested && !bindingTenant) {
+        return res.status(400).json({
+          success: false,
+          message: 'Student preview requires a tenant-scoped LTI binding.',
+        });
+      }
+
       if (
-        !skipDeepLinking &&
-        tenant &&
-        (tenantSource === 'binding' || tenantSource === 'agent-backfill') &&
+        grantTeacherTenantOnSession &&
+        bindingTenant &&
         role === 'teacher' &&
         user.roles?.includes('teacher')
       ) {
-        await fullAdapter.grantTeacherTenantAccess(user, tenant);
+        await fullAdapter.grantTeacherTenantAccess(user, bindingTenant);
       }
 
       const lis = getLisFromLti(res);
@@ -999,11 +1026,21 @@ export async function initLti(
         },
         custom: stringCustom(res),
         courseHints: contextSnapshot.identifierCandidates,
-        resourceLinkId: getResourceLinkId(res),
+        resourceLinkId,
         tenant,
+        tenantSource,
+        ...(binding ? { binding } : {}),
+        ...(agsClaims ? { ags: agsClaims } : {}),
+        preview: previewRequested,
       });
       user = sessionResolution.user;
-      const jwt = loginAdapter.generateJwt(user);
+      const jwt = loginAdapter.generateJwt(
+        user,
+        previewRequested && bindingTenant
+          ? { preview: { role: 'student', tenantId: bindingTenant } }
+          : undefined
+      );
+      const tenantMode = fullAdapter.getTenantMode?.();
 
       return res.status(200).json({
         success: true,
@@ -1011,6 +1048,8 @@ export async function initLti(
         expiresIn: jwt.expiresIn,
         role,
         tenant,
+        ...(tenantMode ? { tenantMode } : {}),
+        ...(previewRequested ? { previewRole: 'student' } : {}),
         ...(sessionResolution.target ? { target: sessionResolution.target } : {}),
         ...(sessionResolution.launchMetadata
           ? { launchMetadata: sessionResolution.launchMetadata }
@@ -1108,31 +1147,30 @@ export async function initLti(
 
   // ── Deep link selection data ───────────────────────────────────────
 
+  interface DeepLinkPickerCourse {
+    _id: string;
+    course_id?: string;
+    name: string;
+    code: string;
+    semester: string;
+    year: string;
+    section?: string;
+    tenantId?: string;
+    [extra: string]: unknown;
+  }
+
   interface DeepLinkSelectionData {
     title: string;
     resourceLabel: string;
     email?: string;
     tenantMode?: LtiTenantMode;
-    courses: Array<{
-      _id: string;
-      course_id?: string;
-      name: string;
-      code: string;
-      semester: string;
-      year: string;
-      section?: string;
-      tenantId?: string;
-    }>;
-    suggestedCourses?: Array<{
-      _id: string;
-      course_id?: string;
-      name: string;
-      code: string;
-      semester: string;
-      year: string;
-      section?: string;
-      tenantId?: string;
-    }>;
+    isAdmin?: boolean;
+    /** Multi-tenant admin without a course map: the picker must ask for a tenant. */
+    tenantSelectionRequired?: boolean;
+    /** Tenant of the mapped course, when the teacher can see that course. */
+    mappedTenantId?: string;
+    courses: DeepLinkPickerCourse[];
+    suggestedCourses?: DeepLinkPickerCourse[];
     preselectedCourseId?: string;
     lmsContext?: LtiContextSnapshot;
     provision?: { courseId: string; created: boolean; needsConfirmation: boolean };
@@ -1185,6 +1223,10 @@ export async function initLti(
     const clientId = getClientIdFromLtiToken(token);
     const deploymentId = getDeploymentIdFromLtiToken(token);
     const contextId = getContextId(res);
+    const isAdminUser = teacher.roles?.includes('admin') === true;
+    const tenantMode = adapter.getTenantMode ? adapter.getTenantMode() : undefined;
+    const tenantSelectionRequired =
+      requireAdminTenantSelection && tenantMode === 'multi' && isAdminUser;
 
     // Match or provision the platform course for this Moodle context (shared
     // with the context-mapping launch flow), persisting the course map.
@@ -1197,29 +1239,34 @@ export async function initLti(
         clientId,
         deploymentId,
         contextId,
-        autoMapCourse,
+        autoMapCourse: autoMapCourse && !tenantSelectionRequired,
+        autoMapScope,
       }
     );
-    const finalMap = resolved ? { courseId: resolved.courseId } : null;
+    const finalMap = resolved ? { courseId: resolved.courseId, tenantId: resolved.tenantId } : null;
     const lmsContext = buildLtiContextSnapshot(res);
     const provisionMeta: DeepLinkSelectionData['provision'] = resolved?.created
       ? { courseId: resolved.courseId, created: true, needsConfirmation: true }
       : undefined;
 
     const courses = await adapter.listCoursesForTeacher(teacher);
+    const visibleCourseIds = new Set(courses.map((c) => c.id));
+    const mappedCourseVisible = !!finalMap && visibleCourseIds.has(finalMap.courseId);
 
-    const suggestedCoursesRaw = finalMap
+    const suggestedCoursesRaw = mappedCourseVisible
       ? []
-      : await adapter.suggestCourses(guessLmsCourseIdentifiers(res), 8);
+      : (await adapter.suggestCourses(guessLmsCourseIdentifiers(res), suggestedCourseLimit)).filter(
+          (c) => !visibleCourseIds.has(c.id)
+        );
     const suggestedCourseIds = new Set(suggestedCoursesRaw.map((c) => c.id));
 
     const requestedCourseId = String(req.query.courseId ?? '').trim();
     const requestedCourseOk =
       !!requestedCourseId &&
-      (courses.some((c) => c.id === requestedCourseId) ||
-        suggestedCourseIds.has(requestedCourseId));
+      (visibleCourseIds.has(requestedCourseId) || suggestedCourseIds.has(requestedCourseId));
 
-    const mapCourse = (c: LtiCourse) => ({
+    const mapCourse = (c: LtiCourse, suggested: boolean): DeepLinkPickerCourse => ({
+      ...(adapter.extendPickerCourse?.(c, { teacher, suggested }) ?? {}),
       _id: c.id,
       course_id: c.courseId,
       name: c.name,
@@ -1230,30 +1277,57 @@ export async function initLti(
       tenantId: c.tenantId,
     });
 
+    const preselectedCourseId = requestedCourseOk
+      ? requestedCourseId
+      : mappedCourseVisible
+        ? finalMap!.courseId
+        : undefined;
+
     logInfo('[LTI] deeplink selection — data gathered', {
       teacherId: teacher.id,
       courseCount: courses.length,
       suggestedCount: suggestedCoursesRaw.length,
-      preselectedCourseId: requestedCourseOk ? requestedCourseId : finalMap?.courseId || '(none)',
+      preselectedCourseId: preselectedCourseId || '(none)',
+      tenantSelectionRequired,
     });
-
-    const tenantMode = adapter.getTenantMode ? adapter.getTenantMode() : undefined;
 
     return {
       title: adapter.deepLinkPageTitle,
       resourceLabel: adapter.resourceLabel,
       email,
       tenantMode,
-      courses: courses.map(mapCourse),
-      suggestedCourses: suggestedCoursesRaw.length ? suggestedCoursesRaw.map(mapCourse) : undefined,
-      preselectedCourseId: requestedCourseOk
-        ? requestedCourseId
-        : finalMap
-          ? finalMap.courseId
-          : undefined,
+      isAdmin: isAdminUser,
+      tenantSelectionRequired,
+      mappedTenantId: mappedCourseVisible ? finalMap?.tenantId : undefined,
+      courses: courses.map((c) => mapCourse(c, false)),
+      suggestedCourses: suggestedCoursesRaw.length
+        ? suggestedCoursesRaw.map((c) => mapCourse(c, true))
+        : undefined,
+      preselectedCourseId,
       lmsContext,
       provision: provisionMeta,
     };
+  };
+
+  // A teacher may pick a course they teach, any course (admins), or one of the
+  // courses suggested from the launch's LMS identifiers.
+  const resolvePickerCourse = async (
+    teacher: LtiUser,
+    courseId: string,
+    res: express.Response,
+    attach: boolean
+  ): Promise<{ course: LtiCourse | null; source: string }> => {
+    const owned = await adapter.getCourseForTeacher(teacher, courseId);
+    if (owned) return { course: owned, source: 'teacher-owned' };
+    if (teacher.roles?.includes('admin')) {
+      const course = await adapter.getCourseById(courseId);
+      return { course, source: course ? 'admin-lookup' : 'none' };
+    }
+    const suggested = await adapter.suggestCourses(guessLmsCourseIdentifiers(res), allowedCourseLimit);
+    if (!suggested.some((c) => c.id === courseId)) return { course: null, source: 'none' };
+    const course = await adapter.getCourseById(courseId);
+    if (course && attach) await adapter.ensureTeacherInCourse(course, teacher);
+    return { course, source: course ? 'suggested-match' : 'none' };
   };
 
   lti.app.get('/deeplink/data', async (req: express.Request, res: express.Response) => {
@@ -1341,26 +1415,12 @@ export async function initLti(
         return res.status(403).json({ status: 'fail', message: 'Not authorized' });
       }
 
-      let course = await adapter.getCourseForTeacher(teacher, courseId);
-      let courseSource = course ? 'teacher-owned' : 'none';
-
-      if (!course) {
-        const isAdminUser = teacher.roles?.includes('admin');
-        if (isAdminUser) {
-          course = await adapter.getCourseById(courseId);
-          if (course) courseSource = 'admin-lookup';
-        } else {
-          const suggested = await adapter.suggestCourses(guessLmsCourseIdentifiers(res), 12);
-          const allowed = suggested.some((c) => c.id === courseId);
-          if (allowed) {
-            course = await adapter.getCourseById(courseId);
-            if (course) {
-              await adapter.ensureTeacherInCourse(course, teacher);
-              courseSource = 'suggested-match';
-            }
-          }
-        }
-      }
+      const { course, source: courseSource } = await resolvePickerCourse(
+        teacher,
+        courseId,
+        res,
+        attachTeacherOnBrowse
+      );
 
       if (!course) {
         logWarn('[LTI] /deeplink/course/:courseId/agents — course not found', {
@@ -1421,20 +1481,7 @@ export async function initLti(
         return res.status(403).json({ status: 'fail', message: 'Not authorized' });
       }
 
-      let course = await adapter.getCourseForTeacher(teacher, courseId);
-      if (!course) {
-        const isAdminUser = teacher.roles?.includes('admin');
-        if (isAdminUser) {
-          course = await adapter.getCourseById(courseId);
-        } else {
-          const suggested = await adapter.suggestCourses(guessLmsCourseIdentifiers(res), 12);
-          const allowed = suggested.some((c) => c.id === courseId);
-          if (allowed) {
-            course = await adapter.getCourseById(courseId);
-            if (course) await adapter.ensureTeacherInCourse(course, teacher);
-          }
-        }
-      }
+      const { course } = await resolvePickerCourse(teacher, courseId, res, attachTeacherOnBrowse);
 
       if (!course) {
         return res.status(404).json({ status: 'fail', message: 'Course not found' });
@@ -1483,34 +1530,18 @@ export async function initLti(
         return res.status(403).json({ status: 'fail', message: 'Not authorized' });
       }
       const courseId = String(req.params.courseId ?? '').trim();
-      let course = await adapter.getCourseForTeacher(teacher, courseId);
-      if (!course) {
-        if (teacher.roles?.includes('admin')) {
-          course = await adapter.getCourseById(courseId);
-        } else {
-          const suggested = await adapter.suggestCourses(guessLmsCourseIdentifiers(res), 12);
-          if (suggested.some((c) => c.id === courseId)) {
-            course = await adapter.getCourseById(courseId);
-            if (course) await adapter.ensureTeacherInCourse(course, teacher);
-          }
-        }
-      }
+      const { course } = await resolvePickerCourse(teacher, courseId, res, attachTeacherOnBrowse);
       if (!course) {
         return res.status(404).json({ status: 'fail', message: 'Course not found' });
       }
       const assignments = await adapter.listSelectableAssignments(teacher, course, course.tenantId);
+      // Adapter-specific fields pass through so host pickers can group and label items.
       return res.status(200).json({
         status: 'success',
         agsEnabled,
         assignments: assignments.map((a) => ({
+          ...a,
           _id: a.id,
-          title: a.title,
-          description: a.description,
-          iconUrl: a.iconUrl,
-          gradingEnabled: a.gradingEnabled,
-          maxScore: a.maxScore,
-          availableFrom: a.availableFrom,
-          availableUntil: a.availableUntil,
           source: a.source || 'other',
         })),
       });
@@ -1575,20 +1606,7 @@ export async function initLti(
           return sendErr('Missing course.');
         }
 
-        let course = await adapter.getCourseForTeacher(teacher, courseId);
-        if (!course) {
-          const isAdminUser = teacher.roles?.includes('admin');
-          if (isAdminUser) {
-            course = await adapter.getCourseById(courseId);
-          } else {
-            const suggested = await adapter.suggestCourses(guessLmsCourseIdentifiers(res), 12);
-            const allowed = suggested.some((c) => c.id === courseId);
-            if (allowed) {
-              course = await adapter.getCourseById(courseId);
-              if (course) await adapter.ensureTeacherInCourse(course, teacher);
-            }
-          }
-        }
+        const { course } = await resolvePickerCourse(teacher, courseId, res, true);
         if (!course) {
           return sendErr('Course not found.');
         }
@@ -1706,6 +1724,7 @@ export async function initLti(
               title: assignment.title,
               scoreMaximum: assignment.maxScore,
               tagPrefix: prefix,
+              tag: assignment.lineItemTag,
             });
           }
 
@@ -1729,7 +1748,7 @@ export async function initLti(
           if (!adapter.getCategoryById) {
             return sendErr('Category binding not supported.');
           }
-          const cat = await adapter.getCategoryById(categoryId);
+          const cat = await adapter.getCategoryById(categoryId, bindingTenant);
           if (!cat) {
             return sendErr('Category not found.');
           }
@@ -1983,12 +2002,24 @@ export async function initLti(
           return res.status(400).json({ status: 'fail', message: 'Missing categoryId' });
         }
 
-        const cat = await adapter.getCategoryById(categoryId);
+        const token = res.locals?.token;
+        const binding = await adapter.findResourceBinding({
+          ...buildPlatformContext(token, res),
+          resourceLinkId: getResourceLinkId(res),
+        });
+        if (!binding || binding.bindingType !== 'category' || binding.categoryId !== categoryId) {
+          return res
+            .status(403)
+            .json({ status: 'fail', message: 'Category is not bound to this launch' });
+        }
+        const tenantId = binding.tenantId || (await adapter.resolveTenantFromBinding(binding));
+
+        const cat = await adapter.getCategoryById(categoryId, tenantId);
         if (!cat) {
           return res.status(404).json({ status: 'fail', message: 'Category not found' });
         }
 
-        const agents = await adapter.listCategoryAgents(categoryId);
+        const agents = await adapter.listCategoryAgents(categoryId, tenantId);
 
         return res.status(200).json({
           status: 'success',
@@ -1996,6 +2027,8 @@ export async function initLti(
             _id: cat.id,
             name: cat.name,
             description: cat.description,
+            iconUrl: cat.iconUrl,
+            backgroundUrl: cat.backgroundUrl,
             agentCount: cat.agentCount,
             isCourseStudentAgents: cat.isCourseStudentAgents,
             courseId: cat.courseId,
@@ -2051,14 +2084,38 @@ export async function initLti(
       const deploymentId = getDeploymentIdFromLtiToken(token);
       const contextId = getContextId(res);
       const resourceLinkId = getResourceLinkId(res);
+      const frontend = getFrontendBaseUrl(req, opts.frontendBaseUrl);
+      const bindingKey = { issuer, clientId, deploymentId, contextId, resourceLinkId };
 
-      const binding = await adapter.findResourceBinding({
-        issuer,
-        clientId,
-        deploymentId,
-        contextId,
-        resourceLinkId,
-      });
+      if (teacherDeepLinkedLaunch === 'content') {
+        const deepLink = readDeepLinkSelection(getCustom(res), prefix);
+        if (deepLink.configured) {
+          try {
+            const existing = await adapter.findResourceBinding(bindingKey);
+            await adoptDeepLinkBinding(token, res, deepLink, existing);
+          } catch (adoptError: any) {
+            logWarn('[LTI] /launch/manage — failed to adopt deep link binding (continuing)', {
+              message: adoptError?.message,
+            });
+          }
+          const target = buildContentLaunchUrl(frontend, deepLink, false);
+          if (target) {
+            logInfo('[LTI] /launch/manage — deep link already configured, opening content', {
+              email,
+              bindingType: deepLink.bindingType,
+              courseId: deepLink.courseId,
+            });
+            return lti.redirect(res, target, { newResource: true });
+          }
+        }
+      }
+
+      const binding = await adapter.findResourceBinding(bindingKey);
+      const bindingTenant = binding
+        ? binding.tenantId || (await adapter.resolveTenantFromBinding(binding))
+        : undefined;
+      const withPreview = (url: string) =>
+        learnerPreview ? `${url}&preview=student` : url;
 
       let courseName: string | undefined;
       let agentName: string | undefined;
@@ -2068,14 +2125,12 @@ export async function initLti(
       const bindingType = binding?.bindingType || 'agent';
 
       if (binding?.courseId) {
-        const course = await adapter.getCourseById(binding.courseId);
+        const course = await adapter.getCourseById(binding.courseId, bindingTenant);
         courseName = course?.name;
       }
 
-      const frontend = getFrontendBaseUrl(req, opts.frontendBaseUrl);
-
       if (bindingType === 'category' && binding?.categoryId && adapter.getCategoryById) {
-        const cat = await adapter.getCategoryById(binding.categoryId);
+        const cat = await adapter.getCategoryById(binding.categoryId, bindingTenant);
         categoryName = cat?.name;
         agentCount = cat?.agentCount;
         const qs = new URLSearchParams();
@@ -2083,23 +2138,26 @@ export async function initLti(
         qs.set('lti', '1');
         qs.set('embedded', '1');
         if (binding.courseId) qs.set('courseId', binding.courseId);
+        if (learnerPreview) qs.set('preview', 'student');
         qs.set('ltik', ltik);
         previewUrl = `${frontend}/lti/launch?${qs.toString()}`;
       } else if (bindingType === 'assignment' && binding?.assignmentId) {
         if (adapter.getAssignmentById) {
-          const assignment = await adapter.getAssignmentById(binding.assignmentId, binding.tenantId);
+          const assignment = await adapter.getAssignmentById(binding.assignmentId, bindingTenant);
           agentName = assignment?.title;
         }
         const launchUrl = buildContentLaunchUrl(frontend, binding, false);
-        previewUrl = launchUrl ? `${launchUrl}&ltik=${encodeURIComponent(ltik)}` : undefined;
+        previewUrl = launchUrl
+          ? `${withPreview(launchUrl)}&ltik=${encodeURIComponent(ltik)}`
+          : undefined;
       } else if (binding?.resourceId) {
         if (adapter.getResourceById) {
-          const resource = await adapter.getResourceById(binding.resourceId);
+          const resource = await adapter.getResourceById(binding.resourceId, bindingTenant);
           agentName = resource?.name;
         }
         previewUrl =
           launchDestination === 'app'
-            ? `${frontend}/lti/launch?agentId=${encodeURIComponent(binding.resourceId)}&lti=1&embedded=1&ltik=${encodeURIComponent(ltik)}`
+            ? `${withPreview(`${frontend}/lti/launch?agentId=${encodeURIComponent(binding.resourceId)}&lti=1&embedded=1`)}&ltik=${encodeURIComponent(ltik)}`
             : `${frontend}/embed/${encodeURIComponent(binding.resourceId)}`;
       }
 
@@ -2124,6 +2182,7 @@ export async function initLti(
         renderTeacherManagePage({
           title: adapter.deepLinkPageTitle,
           resourceLabel: adapter.resourceLabel,
+          assignmentLabel: adapter.assignmentLabel,
           email,
           courseName,
           agentName: categoryName || agentName,
@@ -2187,20 +2246,7 @@ export async function initLti(
             );
         }
 
-        let course = await adapter.getCourseForTeacher(teacher, courseId);
-        if (!course) {
-          const isAdminUser = teacher.roles?.includes('admin');
-          if (isAdminUser) {
-            course = await adapter.getCourseById(courseId);
-          } else {
-            const suggested = await adapter.suggestCourses(guessLmsCourseIdentifiers(res), 12);
-            const allowed = suggested.some((c) => c.id === courseId);
-            if (allowed) {
-              course = await adapter.getCourseById(courseId);
-              if (course) await adapter.ensureTeacherInCourse(course, teacher);
-            }
-          }
-        }
+        const { course } = await resolvePickerCourse(teacher, courseId, res, true);
         if (!course) {
           return res
             .status(200)

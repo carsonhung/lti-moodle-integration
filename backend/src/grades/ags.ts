@@ -148,6 +148,8 @@ export function buildAgsLineItemPayload(input: {
   title: string;
   scoreMaximum: number;
   tagPrefix: string;
+  /** Replaces the default `<tagPrefix>:assignment:<id>` tag. */
+  tag?: string;
 }): LtiLineItem {
   if (
     !input.assignmentId ||
@@ -161,7 +163,7 @@ export function buildAgsLineItemPayload(input: {
     scoreMaximum: input.scoreMaximum,
     label: input.title,
     resourceId: input.assignmentId,
-    tag: assignmentLineItemTag(input.tagPrefix, input.assignmentId),
+    tag: input.tag?.trim() || assignmentLineItemTag(input.tagPrefix, input.assignmentId),
   };
 }
 

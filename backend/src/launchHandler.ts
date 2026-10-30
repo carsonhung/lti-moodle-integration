@@ -43,8 +43,10 @@ export async function resolveOrProvisionCourseForContext(
     deploymentId: string;
     contextId: string;
     autoMapCourse: boolean;
+    /** `teacher`: only match courses the teacher teaches (admins: any). Default `any`. */
+    autoMapScope?: 'any' | 'teacher';
   }
-): Promise<{ courseId: string; created: boolean } | null> {
+): Promise<{ courseId: string; tenantId?: string; created: boolean } | null> {
   const platform = {
     issuer: params.issuer,
     clientId: params.clientId,
@@ -52,6 +54,7 @@ export async function resolveOrProvisionCourseForContext(
     contextId: params.contextId,
   };
   const isAdminUser = teacher.roles?.includes('admin');
+  const teacherScoped = params.autoMapScope === 'teacher';
 
   let map = await adapter.findCourseMap(platform);
 
@@ -60,7 +63,7 @@ export async function resolveOrProvisionCourseForContext(
     for (const candidate of candidates) {
       const found =
         (await adapter.findCourseByCourseIdForTeacher(teacher, candidate)) ||
-        (await adapter.findCourseByCourseId(candidate));
+        (!teacherScoped || isAdminUser ? await adapter.findCourseByCourseId(candidate) : null);
       if (found) {
         if (!isAdminUser) {
           try {
@@ -121,7 +124,9 @@ export async function resolveOrProvisionCourseForContext(
 
   if (!isAdminUser) {
     try {
-      const mappedCourse = await adapter.getCourseById(map.courseId);
+      const mappedCourse = teacherScoped
+        ? await adapter.getCourseForTeacher(teacher, map.courseId, map.tenantId)
+        : await adapter.getCourseById(map.courseId, map.tenantId);
       if (mappedCourse) await adapter.ensureTeacherInCourse(mappedCourse, teacher);
     } catch (e: any) {
       logWarn('[LTI] Failed to auto-attach teacher to mapped course (continuing)', {
@@ -132,7 +137,7 @@ export async function resolveOrProvisionCourseForContext(
     }
   }
 
-  return { courseId: map.courseId, created };
+  return { courseId: map.courseId, ...(map.tenantId ? { tenantId: map.tenantId } : {}), created };
 }
 
 // ─── Normalized launch handling ──────────────────────────────────────────────
