@@ -1,6 +1,6 @@
 {
   "name": "lti-moodle-integration",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "LTI 1.3 tool provider for Express with Vue 3 / React 18 UI: Moodle (or any LMS) launch to app session, Deep Linking, and AGS grade passback.",
   "keywords": [
     "lti",
