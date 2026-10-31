@@ -27,7 +27,7 @@
     "education"
   ],
   "author": "Dr. Carson Hung",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only OR LicenseRef-Commercial",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/carsonhung/lti-moodle-integration.git"
@@ -62,7 +62,8 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "COMMERCIAL-LICENSE.md"
   ],
   "publishConfig": {
     "access": "public"

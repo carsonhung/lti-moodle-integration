@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/lti-moodle-integration.svg)](https://www.npmjs.com/package/lti-moodle-integration)
 [![CI](https://github.com/carsonhung/lti-moodle-integration/actions/workflows/ci.yml/badge.svg)](https://github.com/carsonhung/lti-moodle-integration/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: AGPL-3.0 or commercial](https://img.shields.io/badge/license-AGPL--3.0%20%7C%20commercial-blue.svg)](COMMERCIAL-LICENSE.md)
 ![Node >= 22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)
 ![TypeScript](https://img.shields.io/badge/types-TypeScript-3178c6.svg)
 
@@ -415,6 +415,15 @@ Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE), Copyright 2026 Dr. Carson Hung —
-see [`NOTICE`](NOTICE). An independent community project, used in HKU TALIC
-projects including the TALIC Chatbot.
+Copyright 2026 Dr. Carson Hung. Dual-licensed:
+
+- **[AGPL-3.0](LICENSE)**: free, if the application you use it in is also
+  released as open source under the AGPL. This includes tools that users reach
+  over a network, such as one launched from Moodle.
+- **[Commercial license](COMMERCIAL-LICENSE.md)**: for closed-source,
+  commercial, SaaS and institutional deployments.
+  [Request one](https://github.com/carsonhung/lti-moodle-integration/issues/new?template=commercial-license.yml).
+
+Versions up to and including 1.3.0 remain available under the Apache License
+2.0. See [`NOTICE`](NOTICE). An independent community project, used in HKU
+TALIC projects including the TALIC Chatbot.

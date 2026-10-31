@@ -1,0 +1,39 @@
+name: Commercial license request
+description: Use lti-moodle-integration in a closed-source or commercial product or service.
+title: "Commercial license: <organization>"
+labels: ["commercial-license"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is **public**. Share only what you're comfortable publishing;
+        we'll continue the conversation privately.
+  - type: input
+    id: organization
+    attributes:
+      label: Company, institution or organization
+    validations:
+      required: true
+  - type: input
+    id: contact
+    attributes:
+      label: How should we contact you privately?
+      description: For example, a work email address or a LinkedIn profile.
+    validations:
+      required: true
+  - type: dropdown
+    id: use
+    attributes:
+      label: How will you use lti-moodle-integration?
+      options:
+        - Commercial LTI tool / SaaS
+        - Internal tool at an institution
+        - Client project (agency)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: lms
+    attributes:
+      label: Which LMS?
+      placeholder: Moodle 4.5, Canvas, …

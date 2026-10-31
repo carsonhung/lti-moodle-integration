@@ -41,5 +41,15 @@ versions in step when you change one of them.
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the
-[Apache License 2.0](LICENSE), the same license as the project.
+lti-moodle-integration is dual-licensed under the AGPL-3.0 and a commercial
+license (see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)). To keep that
+possible, by submitting a pull request you agree that:
+
+1. your contribution is your own original work, or you have the right to
+   submit it;
+2. you license your contribution to the project maintainer under the AGPL-3.0
+   **and** grant a perpetual, worldwide, royalty-free right to relicense it
+   under other terms, including the commercial license.
+
+You keep the copyright to your contribution. If you can't agree to this,
+please open an issue describing the change instead of sending code.

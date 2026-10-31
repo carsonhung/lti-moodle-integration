@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **License is now AGPL-3.0-only, or a commercial license** (was Apache-2.0).
+  See `COMMERCIAL-LICENSE.md`. Versions up to and including 1.3.0 remain
+  Apache-2.0.
+
 ## [1.3.0] - 2026-10-30
 
 ### Security
