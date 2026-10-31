@@ -6,16 +6,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.0] - Unreleased
-
-No API changes. The major version marks the license change.
-
-### Changed
-
-- **Breaking (license): now AGPL-3.0-only, or a commercial license** (was Apache-2.0).
-  See `COMMERCIAL-LICENSE.md`. Versions up to and including 1.3.0 remain
-  Apache-2.0.
-
 ## [1.3.0] - 2026-10-30
 
 ### Security
@@ -234,8 +224,7 @@ Pre-release history; 1.2.0 is the first public release.
   adapters, and Vue 3 / React 18 frontend components sharing one
   framework-neutral `api.ts`.
 
-[Unreleased]: https://github.com/carsonhung/lti-moodle-integration/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/carsonhung/lti-moodle-integration/compare/v1.3.0...v2.0.0
+[Unreleased]: https://github.com/carsonhung/lti-moodle-integration/compare/v1.3.0...HEAD
 [1.3.0]: https://github.com/carsonhung/lti-moodle-integration/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/carsonhung/lti-moodle-integration/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/carsonhung/lti-moodle-integration/releases/tag/v1.2.0
