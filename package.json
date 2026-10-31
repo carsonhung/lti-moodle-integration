@@ -83,7 +83,7 @@
   },
   "dependencies": {
     "express": "^4.19.0",
-    "jose": "^5.10.0",
+    "jose": "^6.2.13",
     "jsonwebtoken": "^9.0.2",
     "ltijs": "^5.9.9"
   },
