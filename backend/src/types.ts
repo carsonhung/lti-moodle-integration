@@ -12,6 +12,7 @@
 
 import type { Request, Response } from 'express';
 import type { DeepLinkResponseFacade } from './deepLinkResponse';
+import type { DeepLinkItemText } from './deepLinkItems';
 
 // ─── Shared Value Types ──────────────────────────────────────────────────────
 
@@ -939,6 +940,15 @@ export interface LtiInitOptions {
    */
   grantTeacherTenantOnSession?: boolean;
   autoEnrollStudents?: boolean;
+  /**
+   * Builds the `text` of each content item returned to the LMS on
+   * `/deeplink/submit` (shown under the activity in Moodle). Receives the
+   * selection `kind` (`resource`, `category` or `assignment`), its `name`,
+   * `description` and, for categories, `agentCount`. Return `undefined` to omit
+   * the text. Defaults to the trimmed description. Not used when the adapter
+   * implements `buildDeepLinkItems`.
+   */
+  deepLinkItemText?: DeepLinkItemText;
   toolBaseUrl?: string;
   frontendBaseUrl?: string;
   /**
