@@ -58,6 +58,12 @@ import {
   shouldRegisterDeepLinkHandler,
 } from './deepLinkResponse';
 import {
+  applyDeepLinkItemMedia,
+  resolveDeepLinkItemText,
+  toPickerAgent,
+  toPickerCategory,
+} from './deepLinkItems';
+import {
   resolveInstitutionalIdentity,
   resolveLtiLoginSession,
   serializePlatformId,
@@ -1436,11 +1442,7 @@ export async function initLti(
         limit: 30,
       });
 
-      const agents = resources.map((a) => ({
-        _id: a.id,
-        name: a.name,
-        source: a.source || 'other',
-      }));
+      const agents = resources.map(toPickerAgent);
 
       logInfo('[LTI] /deeplink/course/:courseId/agents — loaded', {
         email,
@@ -1497,14 +1499,7 @@ export async function initLti(
 
       return res.status(200).json({
         status: 'success',
-        categories: categories.map((c) => ({
-          _id: c.id,
-          name: c.name,
-          description: c.description,
-          agentCount: c.agentCount,
-          isCourseStudentAgents: c.isCourseStudentAgents,
-          source: c.source,
-        })),
+        categories: categories.map(toPickerCategory),
       });
     }
   );
@@ -1696,8 +1691,6 @@ export async function initLti(
           });
 
           const toolBase = getToolBaseUrl(req, opts.toolBaseUrl);
-          const toAbsolute = (url: string) =>
-            url.startsWith('http') ? url : `${toolBase}${url.startsWith('/') ? '' : '/'}${url}`;
           const item: LtiDeepLinkItem = {
             type: 'ltiResourceLink',
             title: assignment.title,
@@ -1707,11 +1700,15 @@ export async function initLti(
               [`${prefix}_assignment_id`]: assignment.id,
             },
           };
-          if (assignment.description) item.text = assignment.description;
-          if (assignment.iconUrl) {
-            item.icon = { url: toAbsolute(assignment.iconUrl), width: 64, height: 64 };
-            item.thumbnail = { url: toAbsolute(assignment.iconUrl), width: 200, height: 200 };
-          }
+          const text = resolveDeepLinkItemText(
+            { kind: 'assignment', name: assignment.title, description: assignment.description },
+            opts.deepLinkItemText
+          );
+          if (text) item.text = text;
+          applyDeepLinkItemMedia(item, toolBase, {
+            iconUrl: assignment.iconUrl,
+            thumbnailUrl: assignment.iconUrl,
+          });
           if (assignment.availableFrom || assignment.availableUntil) {
             item.available = {
               ...(assignment.availableFrom ? { startDateTime: assignment.availableFrom } : {}),
@@ -1779,7 +1776,20 @@ export async function initLti(
               [`${prefix}_category_id`]: categoryId,
             },
           };
-          if (cat.description) catItem.text = cat.description;
+          const catText = resolveDeepLinkItemText(
+            {
+              kind: 'category',
+              name: cat.name,
+              description: cat.description,
+              agentCount: cat.agentCount,
+            },
+            opts.deepLinkItemText
+          );
+          if (catText) catItem.text = catText;
+          applyDeepLinkItemMedia(catItem, toolBase, {
+            iconUrl: cat.iconUrl,
+            thumbnailUrl: cat.iconUrl,
+          });
 
           logInfo('[LTI] /deeplink/submit — category binding saved', {
             teacherId: teacher.id,
@@ -1883,10 +1893,6 @@ export async function initLti(
         if (adapter.buildDeepLinkItems) {
           items = adapter.buildDeepLinkItems(course, resource, launchUrl);
         } else {
-          const toolBase2 = getToolBaseUrl(req, opts.toolBaseUrl);
-          const toAbsolute = (url: string) =>
-            url.startsWith('http') ? url : `${toolBase2}${url.startsWith('/') ? '' : '/'}${url}`;
-
           const item: LtiDeepLinkItem = {
             type: 'ltiResourceLink',
             title: resource.name,
@@ -1896,15 +1902,15 @@ export async function initLti(
               [`${prefix}_resource_id`]: resource.id,
             },
           };
-          if (resource.description) {
-            item.text = resource.description;
-          }
-          if (resource.iconUrl) {
-            item.icon = { url: toAbsolute(resource.iconUrl), width: 64, height: 64 };
-          }
-          if (resource.thumbnailUrl) {
-            item.thumbnail = { url: toAbsolute(resource.thumbnailUrl), width: 200, height: 200 };
-          }
+          const text = resolveDeepLinkItemText(
+            { kind: 'resource', name: resource.name, description: resource.description },
+            opts.deepLinkItemText
+          );
+          if (text) item.text = text;
+          applyDeepLinkItemMedia(item, toolBase, {
+            iconUrl: resource.iconUrl,
+            thumbnailUrl: resource.thumbnailUrl,
+          });
           items = [item];
         }
 

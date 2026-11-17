@@ -92,6 +92,12 @@ export {
 } from './grades/ags';
 export { readDeepLinkSelection, deepLinkBindingMatches } from './deepLinkSelection';
 export type { DeepLinkSelection } from './deepLinkSelection';
+export { defaultDeepLinkItemText, toAbsoluteUrl } from './deepLinkItems';
+export type {
+  DeepLinkItemKind,
+  DeepLinkItemText,
+  DeepLinkItemTextContext,
+} from './deepLinkItems';
 export type { SendScoreParams, SendScoreResult } from './grades/sendScore';
 // OAuth 1.0a primitives (exposed for custom legacy flows + testing).
 export {

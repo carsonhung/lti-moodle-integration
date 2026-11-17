@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `GET /deeplink/course/:courseId/agents` now returns each agent's
+  `description` and `iconUrl` from `listSelectableResources()`. They were
+  dropped, so picker agents showed no icon even when the adapter supplied one.
+- `GET /deeplink/course/:courseId/categories` now returns `iconUrl`.
+- A category selected on `/deeplink/submit` now sends its `iconUrl` to the LMS
+  as the content item `icon` and `thumbnail`, as agent and assignment
+  selections already did.
+
+### Added
+
+- `deepLinkItemText` option: builds the `text` of each content item returned on
+  `/deeplink/submit` from the selection `kind`, `name`, `description` and (for
+  categories) `agentCount`. Defaults to the trimmed description, as before.
+- Exports `defaultDeepLinkItemText`, `toAbsoluteUrl` and the
+  `DeepLinkItemText` / `DeepLinkItemTextContext` / `DeepLinkItemKind` types.
+
+### Changed
+
+- Relative icon and thumbnail URLs on returned content items are resolved by
+  one shared helper. Any absolute URL (any scheme, or protocol-relative) now
+  passes through unchanged; previously only URLs starting with `http` did.
+
 ## [1.3.0] - 2026-10-30
 
 ### Security
